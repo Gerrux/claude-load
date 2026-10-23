@@ -9,6 +9,7 @@ Regenerate with a Chromium-based browser in headless mode (paths for Windows; on
 
 ```
 chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 --window-size=640,737 --screenshot=docs/screenshots/pane.png "file:///<repo>/docs/mock/index.html?scene=pane"
+chrome --headless=new --hide-scrollbars --force-device-scale-factor=1 --window-size=1280,640 --screenshot=docs/screenshots/social-preview.png "file:///<repo>/docs/mock/index.html?scene=social"
 chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 --window-size=820,104 --screenshot=docs/screenshots/band.png "file:///<repo>/docs/mock/index.html?scene=band"
 chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 --window-size=1080,593 --screenshot=docs/screenshots/terminal.png "file:///<repo>/docs/mock/index.html?scene=terminal"
 ```

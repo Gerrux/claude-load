@@ -193,8 +193,24 @@ function band() {
   </div>`
 }
 
+// 1280×640 link preview for GitHub, X and Reddit: the pitch on the left, the pane on the right.
+function social() {
+  return `<div style="width:1280px;height:640px;display:flex;align-items:center;gap:40px;padding:0 56px;background:radial-gradient(circle at 20% 30%, #2a211d 0%, #1a1a1a 60%);overflow:hidden">
+    <div style="flex:1">
+      <div style="font:700 64px/1.05 'Segoe UI',system-ui,sans-serif;color:#f2f2f2;letter-spacing:-1px">claude-load</div>
+      <div style="font:500 30px/1.3 'Segoe UI',system-ui,sans-serif;color:#d0d0d0;margin-top:18px">Which Claude Code session<br>eats your CPU and memory?</div>
+      <div style="display:flex;gap:10px;margin-top:30px;flex-wrap:wrap;font:600 17px 'Segoe UI',system-ui,sans-serif">
+        ${['per-session load', 'orphaned dev servers', 'one-click cleanup', '8 languages'].map(t => `<span style="background:#2c2c2c;border:1px solid #3a3a3a;color:#e6e6e6;border-radius:999px;padding:7px 14px">${t}</span>`).join('')}
+      </div>
+      <div style="font:500 18px 'Cascadia Mono',Consolas,monospace;color:#d97757;margin-top:34px">github.com/Gerrux/claude-load</div>
+      <div style="font:400 16px 'Segoe UI',system-ui,sans-serif;color:#8b8b8b;margin-top:8px">Windows · macOS · Linux · MIT</div>
+    </div>
+    <div style="transform:scale(0.86);transform-origin:center right;border-radius:14px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.55);border:1px solid #333;height:740px;margin-top:84px">${pane()}</div>
+  </div>`
+}
+
 const scene = new URLSearchParams(location.search).get('scene') || 'pane'
-document.getElementById('root').innerHTML = scene === 'terminal' ? terminal() : scene === 'band' ? band() : pane()
+document.getElementById('root').innerHTML = scene === 'terminal' ? terminal() : scene === 'band' ? band() : scene === 'social' ? social() : pane()
 </script>
 </body>
 </html>
