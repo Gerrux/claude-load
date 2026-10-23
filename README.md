@@ -1,5 +1,7 @@
 <div align="center">
 
+**English** · [Русский](README.ru.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Português](README.pt.md) · [中文](README.zh.md) · [日本語](README.ja.md)
+
 # claude-load
 
 **See which Claude Code session eats your CPU and memory — and clean it up in one click.**
@@ -21,32 +23,47 @@
 
 ## Install
 
-One line in any terminal (macOS, Linux, Git Bash, PowerShell 7):
+One command; pick your shell. It adds this repository as a plugin marketplace and installs
+the mod for your user, so it loads in every new session, in the terminal and in the Claude
+desktop app alike.
+
+**macOS · Linux · Git Bash on Windows**
 
 ```bash
 claude plugin marketplace add Gerrux/claude-load && claude plugin install claude-load@claude-load --config language=auto
 ```
 
-The mod is installed for your user and loads in every new session, in the terminal and
-in the Claude desktop app alike. In a session that is already open run `/reload-plugins`,
-then `/load`.
+**Windows — PowerShell** (5.1 and 7)
 
-<details>
-<summary>Windows PowerShell 5.1, the desktop app, update and removal</summary>
+```powershell
+claude plugin marketplace add Gerrux/claude-load; if ($?) { claude plugin install claude-load@claude-load --config language=auto }
+```
 
-- **Windows PowerShell 5.1** has no `&&`; use `;`:
-  `claude plugin marketplace add Gerrux/claude-load; claude plugin install claude-load@claude-load --config language=auto`
-- **At the prompt of a Claude Code terminal session:**
-  `/plugin marketplace add Gerrux/claude-load`, then `/plugin install claude-load@claude-load`
-- **In the Claude desktop app**, where `/plugin` does not run: click **+** next to the
-  prompt box → **Plugins** → **Add marketplace** `Gerrux/claude-load` → **Add plugin**.
-- **Update:** `claude plugin marketplace update claude-load && claude plugin update claude-load@claude-load`, then `/reload-plugins`.
-- **Remove:** `claude plugin uninstall claude-load@claude-load`.
+**Windows — Command Prompt** (`cmd`)
 
-Requires Claude Code with mods support (2.1.287 or later). The `language` option can be
-`auto`, `en`, `ru`, `de`, `es`, `fr`, `pt`, `zh` or `ja`.
+```bat
+claude plugin marketplace add Gerrux/claude-load && claude plugin install claude-load@claude-load --config language=auto
+```
 
-</details>
+**Claude desktop app only** (no `claude` command in your terminal): click **+** next to
+the prompt box → **Plugins** → **Add marketplace** → `Gerrux/claude-load` → **Add plugin**
+→ **claude-load**.
+
+**Inside a Claude Code terminal session:**
+
+```text
+/plugin marketplace add Gerrux/claude-load
+/plugin install claude-load@claude-load
+```
+
+Then, in a session that was already open, run `/reload-plugins` and `/load`.
+
+| | |
+| --- | --- |
+| **Requires** | Claude Code with mods support, 2.1.287 or later (`claude --version`); Windows 10/11, macOS or Linux |
+| **Language** | `--config language=auto` follows Claude Code's language, then the system locale. Pin one with `en`, `ru`, `de`, `es`, `fr`, `pt`, `zh` or `ja`, or change it later in `/config` |
+| **Update** | `claude plugin marketplace update claude-load` then `claude plugin update claude-load@claude-load`, then `/reload-plugins` |
+| **Remove** | `claude plugin uninstall claude-load@claude-load` (and `claude plugin marketplace remove claude-load`) |
 
 ## Why
 
