@@ -1,0 +1,22 @@
+{
+  "name": "claude-load",
+  "version": "1.0.0",
+  "description": "See which Claude Code session eats your CPU and memory: per-session load, orphaned dev processes and everything else, with graphs, filters and one-click cleanup. Windows, macOS, Linux; 8 languages.",
+  "author": {
+    "name": "Gerrux",
+    "url": "https://github.com/Gerrux"
+  },
+  "homepage": "https://github.com/Gerrux/claude-load",
+  "repository": "https://github.com/Gerrux/claude-load",
+  "license": "MIT",
+  "keywords": ["mods", "monitoring", "cpu", "memory", "sessions", "windows", "macos", "linux"],
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "auto follows Claude Code's language setting, then the system locale",
+      "default": "auto",
+      "options": ["auto", "en", "ru", "de", "es", "fr", "pt", "zh", "ja"]
+    }
+  }
+}

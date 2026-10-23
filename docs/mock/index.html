@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>claude-load screenshots</title>
+<!--
+  Renders the README screenshots from demo data, in the mod's own design: the same SVG
+  icons, bars and sparklines as hooks/register.tsx. No real sessions or projects.
+  ?scene=pane      the /load pane as the Claude desktop app draws it
+  ?scene=terminal  the band above the prompt and the /load report in a terminal
+  Regenerate: see docs/mock/README.md
+-->
+<style>
+  :root { --bg: #1a1a1a; --pane: #242424; --line: #3a3a3a; --text: #ececec; --dim: #9a9a9a; --faint: #6f6f6f;
+          --ok: #3fb950; --warn: #d29922; --err: #f85149; --idle: #8b949e; --accent: #d97757; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif; }
+  .pane { width: 640px; margin: 0; background: var(--pane); padding: 10px 14px 14px; }
+  .title { display: flex; justify-content: space-between; color: var(--dim); font-size: 12.5px; margin-bottom: 10px; }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .meter { display: grid; grid-template-columns: 34px 104px 120px 1fr; align-items: center; gap: 8px; height: 24px; }
+  .meter b { font-weight: 700; }
+  .machine { display: flex; gap: 8px; align-items: center; color: var(--dim); margin-top: 8px; font-size: 12.5px; }
+  .chips { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+  .chip { background: #333; color: var(--text); border-radius: 7px; padding: 3px 10px; font-weight: 600; font-size: 12.5px; }
+  .chip.on { background: #f2f2f2; color: #111; }
+  .tools { display: flex; gap: 14px; align-items: center; margin-top: 10px; font-size: 12.5px; }
+  .select { border: 1px solid var(--line); border-radius: 7px; padding: 2px 8px; }
+  .select::after { content: "  ⌄"; color: var(--dim); }
+  .grow { flex: 1; }
+  .primary { background: var(--accent); color: #fff; border-radius: 7px; padding: 4px 11px; font-weight: 600; }
+  .section { margin-top: 14px; font-weight: 700; letter-spacing: .03em; font-size: 12px; }
+  .section span { color: var(--dim); font-weight: 400; letter-spacing: 0; margin-left: 8px; }
+  .row { display: grid; grid-template-columns: 20px 1fr 96px 70px; align-items: center; margin-top: 9px; }
+  .row.idle { margin-top: 4px; }
+  .row .name { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row.idle .name { font-weight: 400; color: var(--dim); }
+  .row .self { color: var(--accent); }
+  .cpu { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+  .mem { text-align: right; }
+  .sub { display: flex; gap: 10px; align-items: center; padding-left: 20px; color: var(--dim); font-size: 12px; margin-top: 1px; }
+  .sub .meta { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .act { color: var(--faint); }
+  .warnc { color: var(--warn); font-weight: 700; } .errc { color: var(--err); font-weight: 700; } .okc { color: var(--ok); }
+  .footer { color: var(--faint); font-size: 12px; margin-top: 14px; }
+  /* terminal */
+  .term { width: 1080px; background: #0d1117; color: #c9d1d9; padding: 16px 18px 18px; font: 13px/1.5 "Cascadia Mono", Consolas, "SF Mono", monospace; }
+  .term pre { margin: 0; font: inherit; white-space: pre; }
+  .prompt { border: 1px solid #30363d; border-radius: 8px; padding: 8px 10px; margin-top: 10px; color: #8b949e; }
+  .band b { color: var(--warn); }
+  .t-dim { color: #8b949e; } .t-ok { color: var(--ok); } .t-warn { color: var(--warn); } .t-err { color: var(--err); } .t-acc { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const HEX = { error: '#f85149', warning: '#d29922', success: '#3fb950', inactive: '#8b949e' }
+const tone = c => c >= 30 ? 'error' : c >= 10 ? 'warning' : c >= 1 ? 'success' : 'inactive'
+const mtone = f => f >= 0.85 ? 'error' : f >= 0.6 ? 'warning' : 'success'
+const pct = x => Math.round(x) + '%'
+const mem = mb => mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB'
+const memCls = mb => mb >= 4096 ? 'errc' : mb >= 2048 ? 'warnc' : ''
+
+function spark(vals, w, h, color, floor = 5) {
+  const v = vals.length >= 2 ? vals : [vals[0] ?? 0, vals[0] ?? 0]
+  const m = Math.max(floor, ...v), step = w / (v.length - 1)
+  const pts = v.map((x, i) => `${(i * step).toFixed(1)},${(h - 1 - (x / m) * (h - 3)).toFixed(1)}`).join(' ')
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polygon points="0,${h} ${pts} ${w},${h}" fill="${color}" fill-opacity="0.18"/><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`
+}
+function bar(frac, w, h, color) {
+  const f = Math.max(0, Math.min(1, frac)), r = h / 2
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect width="${w}" height="${h}" rx="${r}" fill="#8b949e" fill-opacity="0.22"/>${f > 0 ? `<rect width="${Math.max(h, f * w).toFixed(1)}" height="${h}" rx="${r}" fill="${color}"/>` : ''}</svg>`
+}
+function icon(kind) {
+  const w = b => `<svg width="14" height="14" viewBox="0 0 14 14">${b}</svg>`
+  return {
+    busy: w(`<circle cx="7" cy="7" r="6" fill="${HEX.success}" fill-opacity="0.25"/><circle cx="7" cy="7" r="3.5" fill="${HEX.success}"/>`),
+    working: w(`<circle cx="7" cy="7" r="6" fill="${HEX.warning}" fill-opacity="0.2"/><path d="M7 3.5 A3.5 3.5 0 0 1 7 10.5 Z" fill="${HEX.warning}"/><circle cx="7" cy="7" r="3.5" fill="none" stroke="${HEX.warning}" stroke-width="1.2"/>`),
+    idle: w(`<circle cx="7" cy="7" r="4" fill="none" stroke="${HEX.inactive}" stroke-width="1.5"/>`),
+    orphan: w(`<path d="M7 1.5 L13 12.5 H1 Z" fill="${HEX.warning}"/><rect x="6.3" y="5" width="1.4" height="4" fill="#1b1b1b"/><rect x="6.3" y="10" width="1.4" height="1.4" fill="#1b1b1b"/>`),
+    proc: w(`<circle cx="7" cy="7" r="2.2" fill="none" stroke="${HEX.inactive}" stroke-width="1.3"/><path d="M7 1.5 V3.5 M7 10.5 V12.5 M1.5 7 H3.5 M10.5 7 H12.5 M3.1 3.1 L4.5 4.5 M9.5 9.5 L10.9 10.9 M3.1 10.9 L4.5 9.5 M9.5 4.5 L10.9 3.1" stroke="${HEX.inactive}" stroke-width="1.3"/>`),
+    machine: w(`<rect x="1.5" y="2.5" width="11" height="7" rx="1" fill="none" stroke="${HEX.inactive}" stroke-width="1.3"/><path d="M4.5 12 H9.5 M7 9.5 V12" stroke="${HEX.inactive}" stroke-width="1.3"/>`),
+  }[kind]
+}
+
+// Deterministic demo history: a calm baseline with a recent spike.
+function hist(base, spike, n = 90, seed = 1) {
+  let s = seed
+  const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280
+  return Array.from({ length: n }, (_, i) => Math.max(0, base + (rnd() - 0.5) * base * 0.8 + (i > n - 18 ? spike * Math.min(1, (i - (n - 18)) / 6) : 0)))
+}
+
+const demo = {
+  cpu: 71, memUsed: 41800, memTotal: 65457, cores: 16, age: 2,
+  active: [
+    { name: 'Refactor the auth middleware', status: 'busy', cpu: 38, mem: 2310, procs: 24, meta: 'pytest 31% 1.1 GB · claude 420 MB', h: hist(4, 34, 90, 3) },
+    { name: 'Fix flaky end-to-end tests', status: 'working', cpu: 12, mem: 1480, procs: 19, meta: 'node 11% 640 MB · chrome-headless 380 MB', h: hist(9, 3, 90, 7) },
+    { name: 'Release notes for v2.4', self: true, status: 'busy', cpu: 2, mem: 820, procs: 12, meta: 'this window · claude 2% 410 MB', h: hist(1.5, 0.5, 90, 11) },
+  ],
+  idle: [
+    { name: 'Migrate to Postgres 17', mem: 702 }, { name: 'Write the API reference', mem: 671 },
+    { name: 'Dark mode for settings', mem: 655 }, { name: 'Investigate memory leak', mem: 590 },
+  ],
+  orphans: [{ label: 'webapp/feat-search', cpu: 9, mem: 1350, procs: 3, pid: 48210, name: 'node', owners: 'Fix flaky end-to-end tests', h: hist(8, 1, 90, 5) }],
+  outside: [{ name: 'Claude Desktop', count: 12, cpu: 6, mem: 3060 }, { name: 'chrome', count: 31, cpu: 4, mem: 5240 }, { name: 'Docker Desktop', count: 2, cpu: 3, mem: 960 }, { name: 'slack', count: 5, cpu: 1, mem: 710 }],
+  mcpu: hist(32, 39, 90, 2), mmem: hist(60, 4, 90, 9).map(x => Math.min(100, x)),
+}
+const scale = Math.max(5, ...demo.active.map(r => r.cpu), ...demo.orphans.map(o => o.cpu))
+
+function cpuCell(c) {
+  return `<div class="cpu">${bar(c / scale, 42, 6, HEX[tone(c)])}<span class="${c >= 10 ? (c >= 30 ? 'errc' : 'warnc') : c >= 1 ? 'okc' : ''}">${pct(c)}</span></div>`
+}
+
+function pane() {
+  const d = demo, mf = d.memUsed / d.memTotal
+  const meter = (label, frac, value, vals) => `<div class="meter"><b>${label}</b>${bar(frac, 98, 8, HEX[mtone(frac)])}<b style="color:${HEX[mtone(frac)]}">${value}</b>${spark(vals, 300, 18, HEX[mtone(frac)], 100)}</div>`
+  const active = d.active.map(r => `
+    <div class="row">${icon(r.status)}<div class="name ${r.self ? 'self' : ''}">${r.name}</div>${cpuCell(r.cpu)}<div class="mem ${memCls(r.mem)}">${mem(r.mem)}</div></div>
+    <div class="sub">${spark(r.h, 84, 14, HEX[tone(Math.max(r.cpu, ...r.h.slice(-5)))])}<span class="meta" ${r.self ? 'style="color:var(--accent)"' : ''}>${r.procs} processes · ${r.meta}</span><span class="act">processes</span>${r.self ? '' : '<span class="act">open ↗</span>'}</div>`).join('')
+  const idle = d.idle.map(r => `<div class="row idle">${icon('idle')}<div class="name">${r.name}</div><div></div><div class="mem" style="color:var(--dim)">${mem(r.mem)}</div></div>`).join('')
+  const orphans = d.orphans.map(o => `
+    <div class="row">${icon('orphan')}<div class="name">${o.label}</div>${cpuCell(o.cpu)}<div class="mem">${mem(o.mem)}</div></div>
+    <div class="sub">${spark(o.h, 84, 14, HEX[tone(o.cpu)])}<span>#${o.pid} ${o.name}</span><span class="act">end</span><span class="meta">· in this repo: ${o.owners}</span></div>`).join('')
+  const outside = d.outside.map(x => `<div class="row idle">${icon('proc')}<div class="name">${x.name} <span style="color:var(--faint)">×${x.count}</span></div>${cpuCell(x.cpu)}<div class="mem ${memCls(x.mem)}" style="${memCls(x.mem) ? '' : 'color:var(--dim)'}">${mem(x.mem)}</div></div>`).join('')
+  const claudeCpu = d.active.reduce((a, r) => a + r.cpu, 0), claudeMem = d.active.reduce((a, r) => a + r.mem, 0) + d.idle.reduce((a, r) => a + r.mem, 0)
+  return `<div class="pane">
+    <div class="title"><span>Load by session</span><span>⤢ ✕</span></div>
+    <div class="card">
+      ${meter('CPU', d.cpu / 100, pct(d.cpu), d.mcpu)}
+      ${meter('RAM', mf, `${mem(d.memUsed)} / ${mem(d.memTotal)}`, d.mmem)}
+      <div class="machine">${icon('machine')}<span>Claude: 7 sessions · ${pct(claudeCpu)} CPU · ${mem(claudeMem)} · 16 threads · ${d.age} s ago</span></div>
+    </div>
+    <div class="chips"><span class="chip on">All</span><span class="chip">Active</span><span class="chip">Heavy</span><span class="chip">Orphans</span><span class="chip">This window</span></div>
+    <div class="tools"><span>Group <span class="select">by session</span></span><span>Sort <span class="select">by CPU</span></span><span class="grow"></span><span class="act">↻</span><span class="primary">✨ Sort it out with Claude</span></div>
+    <div class="section">ACTIVE<span>3 · ${pct(claudeCpu)} CPU · ${mem(d.active.reduce((a, r) => a + r.mem, 0))}</span></div>
+    ${active}
+    <div class="section">IDLE<span>4 · ${mem(d.idle.reduce((a, r) => a + r.mem, 0))}</span></div>
+    ${idle}
+    <div class="section">ORPHANS<span>parent gone, process still running</span></div>
+    ${orphans}
+    <div class="section">OUTSIDE SESSIONS</div>
+    ${outside}
+    <div class="footer">graphs show CPU over 6 min · /load band on|off|auto controls the line above the prompt</div>
+  </div>`
+}
+
+const SPARKS = '▁▂▃▄▅▆▇█'
+const sparkT = (vals, w, floor = 5) => { const v = vals.slice(-w), m = Math.max(floor, ...v); return v.map(x => SPARKS[Math.min(7, Math.floor((x / m) * 7.999))]).join('') }
+const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
+const barT = (frac, w) => { const f = Math.max(0, Math.min(1, frac)) * w, full = Math.floor(f), part = full < w ? EIGHTHS[Math.floor((f - full) * 8)] : ''; return ['█'.repeat(full) + part, '░'.repeat(w - full - (part ? 1 : 0))] }
+const pad = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s + ' '.repeat(n - s.length)
+
+function terminal() {
+  const d = demo, mf = d.memUsed / d.memTotal
+  const [cf, ce] = barT(d.cpu / 100, 12), [mfb, me] = barT(mf, 12)
+  const tc = t => ({ error: 't-err', warning: 't-warn', success: 't-ok', inactive: 't-dim' })[t]
+  const row = (r, dot, cls) => `<span class="${cls}">${dot}</span> ${pad(r.name, 34)} <span class="${tc(tone(Math.max(r.cpu ?? 0, ...(r.h ?? [0]).slice(-5))))}">${sparkT(r.h ?? [0, 0], 14)}</span> <span class="${tc(tone(r.cpu ?? 0))}">${pct(r.cpu ?? 0).padStart(4)}</span> ${mem(r.mem).padStart(8)}${r.self ? '  <span class="t-acc">▸ this window</span>' : ''}`
+  const lines = [
+    `<span class="t-dim">&gt;</span> /load`,
+    ``,
+    `CPU <span class="t-warn">${cf}</span><span class="t-dim">${ce}</span> ${pct(d.cpu)} <span class="t-warn">${sparkT(d.mcpu, 16, 100)}</span>   RAM <span class="t-warn">${mfb}</span><span class="t-dim">${me}</span> ${pct(mf * 100)} · ${mem(d.memUsed)} of ${mem(d.memTotal)}`,
+    `<span class="t-dim">Claude: 7 sessions · 52% CPU · 7.1 GB · sampled 2 s ago</span>`,
+    ``,
+    `Active`,
+    ...d.active.flatMap(r => [row(r, '●', 't-ok'), `<span class="t-dim">    ${r.meta.replace('this window · ', '')}</span>`]),
+    ``,
+    `Idle`,
+    ...d.idle.slice(0, 3).map(r => row({ ...r, cpu: 0, h: [0, 0, 0] }, '○', 't-dim')),
+    `<span class="t-dim">  + 1 more · 590 MB</span>`,
+    ``,
+    `Orphans — parent gone, process still running`,
+    `<span class="t-warn">⚠</span> ${pad('webapp/feat-search', 30)} <span class="t-ok">  9%</span>   1.3 GB  node#48210`,
+    `<span class="t-dim">    in this repo: Fix flaky end-to-end tests</span>`,
+    ``,
+    `Outside sessions: Claude Desktop ×12 6% 3.0 GB · chrome ×31 4% 5.1 GB · Docker Desktop ×2 3% 960 MB`,
+  ]
+  return `<div class="term"><pre>${lines.join('\n')}</pre>
+    <div class="prompt" style="display:flex;justify-content:space-between"><pre class="band"><span class="t-warn">${sparkT(d.mcpu, 8, 100)}</span> <b>CPU 71%</b> <b style="color:var(--warn)">RAM 64%</b><span class="t-dim"> · Refactor the auth middl… 38% · Fix flaky end-to-end te… 12% · ⚠ webapp/feat-search 9%</span></pre><span class="t-dim">/load</span></div>
+    <div class="prompt" style="margin-top:6px;color:#c9d1d9">&gt; <span class="t-dim">Ask Claude…</span></div></div>`
+}
+
+function band() {
+  const d = demo, mf = d.memUsed / d.memTotal
+  return `<div style="width:820px;background:var(--bg);padding:12px">
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12.5px">
+      ${spark(d.mcpu, 64, 14, HEX[mtone(d.cpu / 100)], 100)}
+      <b style="color:${HEX[mtone(d.cpu / 100)]}">CPU ${pct(d.cpu)}</b>
+      <b style="color:${HEX[mtone(mf)]}">RAM ${pct(mf * 100)}</b>
+      <span style="color:var(--dim)">· Refactor the auth middl… 38% · Fix flaky end-to-end te… 12% · ⚠ webapp/feat-search 9%</span>
+      <span class="grow"></span><span class="act">/load</span>
+    </div>
+    <div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;color:var(--faint);background:#202020">Reply to Claude…</div>
+  </div>`
+}
+
+const scene = new URLSearchParams(location.search).get('scene') || 'pane'
+document.getElementById('root').innerHTML = scene === 'terminal' ? terminal() : scene === 'band' ? band() : pane()
+</script>
+</body>
+</html>

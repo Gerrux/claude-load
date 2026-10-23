@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-load",
+  "description": "claude-load: CPU and memory per Claude Code session.",
+  "owner": {
+    "name": "Gerrux",
+    "url": "https://github.com/Gerrux"
+  },
+  "plugins": [
+    {
+      "name": "claude-load",
+      "source": "./",
+      "description": "See which Claude Code session eats your CPU and memory, with graphs, filters and one-click cleanup.",
+      "category": "development",
+      "tags": ["mods", "monitoring", "windows", "macos", "linux"]
+    }
+  ]
+}
