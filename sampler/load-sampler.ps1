@@ -130,7 +130,11 @@ function Get-ProcRepo([int]$id) {
 }
 
 function Format-TopRow($r) {
-  [ordered]@{ name = $r.name; pid = $r.pid; cpu = (Round1 $r.cpu); memMB = [int]($r.mem / 1MB) }
+  $row = [ordered]@{ name = $r.name; pid = $r.pid; cpu = (Round1 $r.cpu); memMB = [int]($r.mem / 1MB) }
+  # The start time tells this process from a newer one that reuses its PID: the end button compares it
+  # with the live process. Epoch ms as a string (ConvertTo-Json in PowerShell 5.1 mangles a DateTime).
+  if ($created.ContainsKey($r.pid)) { $row.started = [string]([DateTimeOffset]$created[$r.pid]).ToUnixTimeMilliseconds() }
+  $row
 }
 
 # Top of an orphan group: each tree's root first (ending it with /T ends the whole tree), then the
@@ -162,8 +166,11 @@ while ($true) {
     try { $t = $p.TotalProcessorTime.TotalMilliseconds } catch {}
     $cur[$p.Id] = @{ name = $p.ProcessName; cpuMs = $t; ws = [double]$p.WorkingSet64 }
     # A reused PID (another name, or its CPU time went back) must not keep the old process's parent.
+    # Nor its start time and directory.
     if ($parent.ContainsKey($p.Id) -and (($prevName[$p.Id] -and $prevName[$p.Id] -ne $p.ProcessName) -or ($prevCpu.ContainsKey($p.Id) -and $t -lt $prevCpu[$p.Id]))) {
       $parent.Remove($p.Id)
+      $created.Remove($p.Id)
+      $cwdCache.Remove($p.Id)
     }
     if (-not $parent.ContainsKey($p.Id)) { $hasNew = $true }
   }
@@ -256,7 +263,10 @@ while ($true) {
     $o = Resolve-Owner $id
     $row = @{ pid = $id; name = $c.name; cpu = $c.cpu; mem = $c.ws }
     if ($o -ne 0) {
-      $s = $sessions[$o]; $s.cpu += $c.cpu; $s.mem += $c.ws; $s.procs++; [void]$s.top.Add($row)
+      $s = $sessions[$o]; $s.cpu += $c.cpu; $s.mem += $c.ws; $s.procs++
+      # `top` is what the end button offers: never a process above another session (a shell a nested
+      # session runs in), whose tree holds that session.
+      if ($id -eq $o -or -not $hosts.ContainsKey($id)) { [void]$s.top.Add($row) }
       if (-not $s.byName.ContainsKey($c.name)) { $s.byName[$c.name] = @{ name = $c.name; cpu = 0.0; mem = 0.0; count = 0 } }
       $n = $s.byName[$c.name]; $n.cpu += $c.cpu; $n.mem += $c.ws; $n.count++
       continue
@@ -314,9 +324,7 @@ while ($true) {
   foreach ($k in @($cwdCache.Keys)) { if (-not $cur.ContainsKey($k)) { $cwdCache.Remove($k) } }
 
   function Format-Top($rows, [int]$n) {
-    @($rows | Sort-Object { $_.cpu * 1e6 + $_.mem / 1MB } -Descending | Select-Object -First $n | ForEach-Object {
-      [ordered]@{ name = $_.name; pid = $_.pid; cpu = (Round1 $_.cpu); memMB = [int]($_.mem / 1MB) }
-    })
+    @($rows | Sort-Object { $_.cpu * 1e6 + $_.mem / 1MB } -Descending | Select-Object -First $n | ForEach-Object { Format-TopRow $_ })
   }
 
   # Other processes fold by name: a dozen msedge processes make one row.

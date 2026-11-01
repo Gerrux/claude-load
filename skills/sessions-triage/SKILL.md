@@ -11,7 +11,10 @@ The load comes from claude-load's snapshot, `<home>/.claude/state/load/snapshot.
 (refreshed every few seconds): `cpu`, `memUsedMB`/`memTotalMB`, `sessions[]` (each with
 `pid`, `sessionId`, `hostSessionId`, `name`, `status`, `cpu`, `memMB`, `top[]`),
 `orphans[]` (processes whose parent died, with `label`, `root`, `top[]` PIDs) and
-`outside[]` (other processes folded by name). A snapshot older than 30 s means the
+`outside[]` (other processes folded by name). Each `top[]` row has `name`, `pid` and
+`started`, the process's start time (Windows: epoch milliseconds; macOS/Linux: `ps`
+`lstart` in the C locale); a PID with its name can pass to a new process, the start time
+cannot. A snapshot older than 30 s means the
 sampler is not running: say so and suggest opening `/load`.
 
 ## 1. Gather
@@ -47,9 +50,36 @@ be freed if everything is accepted.
 
 - Archive with `archive_session`, one by one. The app also archives finished side
   sessions of an archived session; list them in the report.
-- End an orphan only after re-reading the snapshot and checking the PID is still there
-  with the same name. Windows: `taskkill /PID <pid> /T /F`. macOS/Linux:
-  `kill -TERM <pid>`, then `kill -KILL <pid>` if it is still alive after 3 s.
+- End an orphan only when the re-read snapshot still has its row with the same `pid`,
+  `name` and `started`, and the live process under that PID has that start time right
+  before ending it. A row without `started`, or any mismatch: do not end it; say the PID
+  now belongs to another process (or cannot be checked) and leave it.
+- Windows: one PowerShell command, with `$id` and `$started` from the row. It checks the
+  start time and ends the tree by explicit PIDs. Not `taskkill /T`: Windows keeps a dead
+  parent's PID on its children, so `/T` also ends unrelated processes whose dead parent
+  once had this PID.
+
+  ```powershell
+  $id = <pid>; $started = '<started>'
+  $all = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate)
+  $ms = @{}; foreach ($p in $all) { if ($p.CreationDate) { $ms[[int]$p.ProcessId] = [string]([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds() } }
+  if (-not $started -or $ms[$id] -ne $started) { "PID $id is no longer that process: not ending it"; exit 1 }
+  $tree = New-Object 'Collections.Generic.List[int]'; $tree.Add($id)
+  for ($i = 0; $i -lt $tree.Count; $i++) {
+    foreach ($p in $all) {
+      $c = [int]$p.ProcessId
+      if ($p.ParentProcessId -eq $tree[$i] -and $c -ne $tree[$i] -and $ms[$c] -and [int64]$ms[$c] -ge [int64]$ms[$tree[$i]] -and -not $tree.Contains($c)) { $tree.Add($c) }
+    }
+  }
+  $tree.Reverse()
+  Stop-Process -Id $tree -Force
+  ```
+
+- macOS/Linux: `LC_ALL=C ps -o lstart= -p <pid>` must print `started` (runs of spaces
+  count as one). Take the tree from one listing, `LC_ALL=C ps -axo pid=,ppid=,lstart=`
+  (`-eo` on Linux): the PID and its descendants by `ppid`, each with its `lstart`.
+  `kill -TERM` them all; after 3 s list again and `kill -KILL` only the PIDs still
+  there with the same `lstart`: a PID freed by SIGTERM may already be another process.
 - After about 10 s re-read the snapshot and report before → after (memory, CPU, number
   of live sessions).
 

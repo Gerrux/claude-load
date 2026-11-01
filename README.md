@@ -93,9 +93,11 @@ In the pane:
 
 - **processes** expands a session into its processes by name and its heavy PIDs.
 - **end** on a process or an orphan ends it with its child processes after
-  **Yes, end it**. The PID is checked again against a fresh sample under the same name
-  first. Sessions' own `claude` processes and PIDs not in the current sample cannot be
-  ended from here.
+  **Yes, end it**. First the PID is checked again against a fresh sample under the same
+  name, then the live process under it must have the start time of the row you clicked:
+  a PID reused by a new process of the same name is refused. Sessions' own `claude`
+  processes, the shells other sessions run in, and PIDs not in the current sample cannot
+  be ended from here.
 - **open ↗** switches to that session in the Claude desktop app.
 - **✨ Sort it out with Claude** asks Claude in the current session to triage the load.
   Archiving sessions needs the desktop app's session tools; in a terminal Claude tells you
@@ -132,6 +134,10 @@ from the process itself (Windows reads it from the process's memory, Linux from
 - **"The sampler does not start"** (Windows): PowerShell scripts are blocked by policy
   (`AllSigned` or Constrained Language Mode). The sampler needs to run
   `sampler/load-sampler.ps1` from the plugin folder.
+- **"This process cannot be ended from here" after updating to 1.0.1** (Windows): a sampler
+  from 1.0.0 is still running and writes no start times. End the hidden `powershell.exe`
+  running `load-sampler.ps1` in Task Manager, or close every Claude Code session for
+  3 minutes; the next session starts the new one.
 - **Nothing shows on macOS/Linux:** check that `ps` is on `PATH`; `lsof` (macOS) is
   needed only for orphans.
 

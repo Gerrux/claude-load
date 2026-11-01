@@ -3,8 +3,8 @@ import type { On, RenderPropsOf, SessionStartInput, TestBody } from 'claude-code
 
 import { LANGS, STRINGS, matchLang, plural } from '../hooks/i18n'
 import {
-  applyFilter, bandText, bar, buildView, canKill, descendants, fmtMem, groupProcs, groupRepos, isBusy, orphanOwners, repoRoot,
-  samplerCommand, sessionLink, setLang, sparkSvg, sparkText, textReport,
+  applyFilter, bandText, bar, buildView, canKill, descendants, fmtMem, groupProcs, groupRepos, isBusy, orphanOwners, parseWinProcs, repoRoot,
+  sameProcess, samplerCommand, sessionLink, setLang, sparkSvg, sparkText, textReport, winTree,
 } from '../hooks/register'
 import type { Snapshot } from '../hooks/register'
 
@@ -24,7 +24,7 @@ function snapshot(over: Partial<Snapshot> = {}): Snapshot {
     sessions: [
       {
         pid: 1, name: 'Power line processing', status: 'busy', cwd: 'C:\\repo\\pipeline', hostSessionId: 'local_aaaa-1', sessionId: 'S1',
-        cpu: 38.2, memMB: 1500, procs: 28, top: [{ name: 'python', pid: 11, cpu: 35, memMB: 900 }, { name: 'claude', pid: 1, cpu: 1, memMB: 400 }],
+        cpu: 38.2, memMB: 1500, procs: 28, top: [{ name: 'python', pid: 11, cpu: 35, memMB: 900, started: '1700000000011' }, { name: 'claude', pid: 1, cpu: 1, memMB: 400 }],
         byName: [{ name: 'python', count: 4, cpu: 35, memMB: 900 }, { name: 'claude', count: 1, cpu: 1, memMB: 400 }],
       },
       {
@@ -32,14 +32,19 @@ function snapshot(over: Partial<Snapshot> = {}): Snapshot {
         cpu: 0.4, memMB: 264, procs: 2, top: [], byName: [{ name: 'node', count: 2, cpu: 0.4, memMB: 200 }],
       },
     ],
-    orphans: [{ label: 'webapp/fix-x', root: 'C:\\repo\\webapp', cpu: 9, memMB: 400, procs: 3, top: [{ name: 'node', pid: 21, cpu: 9, memMB: 400 }] }],
+    orphans: [{ label: 'webapp/fix-x', root: 'C:\\repo\\webapp', cpu: 9, memMB: 400, procs: 3, top: [{ name: 'node', pid: 21, cpu: 9, memMB: 400, started: '1700000000021' }] }],
     outside: [{ name: 'zen', count: 48, cpu: 2, memMB: 8863 }, { name: 'claude', count: 13, cpu: 11, memMB: 3064 }],
     hist: { cpu: [10, 40, 72], mem: [60, 62, 64], sessions: { S1: [5, 20, 38] }, orphans: { 'webapp/fix-x': [9, 9, 9] } },
     ...over,
   }
 }
 
-function world(on: On, files: Map<string, string>, runs: string[][]) {
+// The Windows live listing (`pid ppid createdMs`) as the kill path reads it right before ending:
+// node #21 as sampled, its child #22, and #23, older than #21: a child of a dead process that once
+// held PID 21, which Windows still lists under that parent.
+const LIVE = ['4 0 ', '21 4 1700000000021', '22 21 1700000000500', '23 21 1600000000000', '11 1 1700000000011'].join('\r\n')
+
+function world(on: On, files: Map<string, string>, runs: string[][], live: { text: string } = { text: LIVE }) {
   mock.store(on, {})
   on('env.get', ($, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : e.name === 'USERPROFILE' ? 'C:\\Users\\u' : undefined }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -52,7 +57,10 @@ function world(on: On, files: Map<string, string>, runs: string[][]) {
     return { value: text }
   })
   on('fs.write', ($, e) => { files.set(e.path, e.text); return { value: undefined } })
-  on('process.run', ($, e) => { runs.push([...e.argv]); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    return { value: { exitCode: 0, stdout: e.argv.some(a => a.includes('Win32_Process')) ? live.text : '', stderr: '' } }
+  })
   on('ui.log', () => ({ value: undefined }))
   on('ui.toast', ($, e) => { runs.push(['toast', e.text]); return { value: undefined } })
   on('prompt.submit', ($, e) => { runs.push(['prompt', e.text]); return { text: e.text } })
@@ -137,6 +145,23 @@ describe('process trees', () => {
     expect(descendants(rows, 10)).toEqual([12, 11, 13])
     expect(descendants(rows, 20)).toEqual([])
     expect(descendants(rows, 30)).toEqual([31])
+  })
+
+  test('sameProcess needs both start times, equal up to runs of spaces', async () => {
+    expect(sameProcess('1700000000021', '1700000000021')).toBe(true)
+    expect(sameProcess('Mon Nov  2 01:06:12 2026', 'Mon Nov 2 01:06:12 2026')).toBe(true)
+    expect(sameProcess('1700000000021', '1700000009999')).toBe(false)
+    expect(sameProcess(undefined, '1700000000021')).toBe(false)
+    expect(sameProcess('1700000000021', undefined)).toBe(false)
+    expect(sameProcess(undefined, undefined)).toBe(false)
+    expect(sameProcess(' ', ' ')).toBe(false)
+  })
+
+  test('the Windows tree skips children older than their parent and unknown creation dates', async () => {
+    const procs = parseWinProcs(LIVE + '\r\n24 22 \r\n25 22 1700000000600\r\nnot a line')
+    expect(procs.find(p => p.pid === 4)).toEqual({ pid: 4, ppid: 0 })
+    expect(procs.find(p => p.pid === 21)).toEqual({ pid: 21, ppid: 4, started: '1700000000021' })
+    expect(winTree(procs, 21)).toEqual([25, 22])
   })
 })
 
@@ -278,7 +303,8 @@ describe('the mod', () => {
       expect(await pane.find({ type: 'Text', text: /End node #21\?/ })).toBe(undefined)
       await pane.press({ key: 'o0-k0' })
       await pane.press({ key: 'kill-yes' })
-      expect(runs.find(a => a[0] === 'taskkill.exe')).toEqual(['taskkill.exe', '/PID', '21', '/T', '/F'])
+      // The tree from the live listing, children first; #23 predates #21, so it is not its child.
+      expect(runs.find(a => a[0] === 'taskkill.exe')).toEqual(['taskkill.exe', '/F', '/PID', '22', '/PID', '21'])
 
       await pane.press({ key: 'f-all' })
       await pane.press({ key: 'i0-open' })
@@ -319,6 +345,46 @@ describe('the mod', () => {
     const reused = snapshot({ ts: NOW + 1 })
     reused.orphans[0].top = [{ name: 'explorer', pid: 21, cpu: 9, memMB: 400 }]
     files.set(SNAP, JSON.stringify(reused))
+    await pane.press({ key: 'kill-yes' })
+    expect(runs.some(a => a[0] === 'taskkill.exe')).toBe(false)
+    expect(runs.find(a => a[0] === 'toast')?.[1]).toMatch(/cannot be ended/)
+  })
+
+  // The reader's case: the process exits and a new one of the same name gets its PID before the
+  // snapshot shows it. PID and name match; only the start time tells them apart.
+  const confirmOrphanKill = async ($: Parameters<TestBody>[0], on: On, live: { text: string }, snap = snapshot()) => {
+    mock.clock(on, { now: NOW })
+    const files = new Map<string, string>([[SNAP, JSON.stringify(snap)]])
+    const runs: string[][] = []
+    world(on, files, runs, live)
+    await $.session.start(session)
+    await $.command.run(run(''))
+    const pane = await $.ui.mount({ plugin: 'claude-load', surface: 'terminal', component: 'Pane', requestId: 'claude-load', props: paneProps })
+    await pane.press({ key: 'f-orphans' })
+    await pane.press({ key: 'o0-k0' })
+    return { pane, runs }
+  }
+
+  test('a kill is refused when the PID and name match but the process started at another time', async ($, on) => {
+    const live = { text: LIVE }
+    const { pane, runs } = await confirmOrphanKill($, on, live)
+    live.text = LIVE.replace('21 4 1700000000021', '21 4 1700000009999')
+    await pane.press({ key: 'kill-yes' })
+    expect(runs.some(a => a[0] === 'taskkill.exe')).toBe(false)
+    expect(runs.find(a => a[0] === 'toast')?.[1]).toMatch(/node #21: this process cannot be ended from here/)
+  })
+
+  test('a kill is refused when the PID is gone from the live listing', async ($, on) => {
+    const { pane, runs } = await confirmOrphanKill($, on, { text: LIVE.replace(/^21 4 .*$/m, '') })
+    await pane.press({ key: 'kill-yes' })
+    expect(runs.some(a => a[0] === 'taskkill.exe')).toBe(false)
+    expect(runs.find(a => a[0] === 'toast')?.[1]).toMatch(/cannot be ended/)
+  })
+
+  test('a kill is refused when the sampled row has no start time (a sampler older than 1.0.1)', async ($, on) => {
+    const snap = snapshot()
+    delete snap.orphans[0].top[0].started
+    const { pane, runs } = await confirmOrphanKill($, on, { text: LIVE }, snap)
     await pane.press({ key: 'kill-yes' })
     expect(runs.some(a => a[0] === 'taskkill.exe')).toBe(false)
     expect(runs.find(a => a[0] === 'toast')?.[1]).toMatch(/cannot be ended/)

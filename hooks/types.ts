@@ -2,7 +2,12 @@
 // session's mod reads. Windows: sampler/load-sampler.ps1. macOS and Linux: hooks/posix.ts,
 // run inside one session's mod (the leader).
 
-export type Top = { name: string; pid: number; cpu: number; memMB: number }
+/**
+ * `started`: when the process started, as the platform tells it (Windows: epoch ms of the CIM
+ * CreationDate; macOS/Linux: ps `lstart` in the C locale). A PID and a name can be reused; the
+ * start time tells the process the user chose from a newer one. Absent: unknown, not endable.
+ */
+export type Top = { name: string; pid: number; cpu: number; memMB: number; started?: string }
 export type ByName = { name: string; count: number; cpu: number; memMB: number }
 
 export type SessionLoad = {

@@ -2,7 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import { STRINGS, fmtMem as fmtMemIn, lead, pickLang, plural } from './i18n'
 import type { Lang } from './i18n'
-import { buildSnapshot, freshMemory, orphanCandidates, parseLsofCwd, parseMeminfo, parsePs, parseSessionFile, parseVmStat } from './posix'
+import { PS_ENV, buildSnapshot, freshMemory, orphanCandidates, parseLsofCwd, parseMeminfo, parsePs, parseSessionFile, parseVmStat, psArgv } from './posix'
 import type { SamplerMemory, SessionMeta } from './posix'
 import type { ByName, OrphanLoad, OutsideLoad, Snapshot, Top } from './types'
 
@@ -325,7 +325,8 @@ export function textReport(v: View): string {
 
 // --- state, polling, actions -------------------------------------------
 
-type Confirm = { pid: number; name: string; where: string }
+/** `started`: the start time of the row the user chose, the baseline the live process must match. */
+type Confirm = { pid: number; name: string; where: string; started?: string }
 type State = {
   snap: Snapshot | null
   selfId: string | null
@@ -430,9 +431,14 @@ async function claimLeader($: EngineInterface, st: State, now: number): Promise<
 async function samplePosix($: EngineInterface, st: State, now: number) {
   // The home folder as cwd: the session's own may be a worktree deleted under it.
   const run = (argv: string[]) => $.process.run(argv, { timeoutMs: 10000, cwd: st.home || undefined })
-  const psr = await run(st.platform === 'darwin' ? ['ps', '-axo', 'pid=,ppid=,time=,rss=,comm='] : ['ps', '-eo', 'pid=,ppid=,time=,rss=,comm='])
+  const ps = (withStart: boolean) =>
+    $.process.run(psArgv(st.platform === 'darwin' ? 'darwin' : 'linux', withStart), { timeoutMs: 10000, cwd: st.home || undefined, env: PS_ENV })
+  let withStart = true
+  let psr = await ps(true)
+  // A ps without `lstart` (busybox) refuses the column: sample without start times, and nothing can be ended.
+  if (psr.exitCode !== 0) psr = await ps(withStart = false)
   if (psr.exitCode !== 0) return
-  const rows = parsePs(psr.stdout)
+  const rows = parsePs(psr.stdout, withStart)
   if (!st.cores) {
     // getconf is missing on some minimal systems (busybox): nproc, then one core.
     for (const argv of [['getconf', '_NPROCESSORS_ONLN'], ['nproc']]) {
@@ -550,31 +556,76 @@ export function descendants(rows: Array<{ pid: number; ppid: number }>, pid: num
   return out
 }
 
+/** The chosen process is the one alive now: both start times known and equal (runs of spaces aside). */
+export function sameProcess(chosen: string | undefined, live: string | undefined): boolean {
+  const norm = (s: string | undefined) => (s ?? '').trim().split(/\s+/).join(' ')
+  return norm(chosen) !== '' && norm(chosen) === norm(live)
+}
+
+/** Windows, right before ending: every process as `pid ppid createdMs`, createdMs computed as the sampler does. */
+const WIN_PROCS =
+  'Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate | ForEach-Object { ' +
+  "'{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }) }"
+
+export type WinProc = { pid: number; ppid: number; started?: string }
+
+/** Output of WIN_PROCS; createdMs is empty for the processes CIM gives no creation date. */
+export function parseWinProcs(text: string): WinProc[] {
+  const out: WinProc[] = []
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s+(\d+)(?:\s+(\d+))?\s*$/.exec(line)
+    if (m) out.push(m[3] ? { pid: Number(m[1]), ppid: Number(m[2]), started: m[3] } : { pid: Number(m[1]), ppid: Number(m[2]) })
+  }
+  return out
+}
+
+/**
+ * The descendants of `pid` on Windows. Windows keeps a dead parent's PID on its children, and a newer
+ * process may reuse that PID: a child older than its "parent" is not its child (taskkill /T would end
+ * it all the same), and with a creation date unknown the link is not followed either.
+ */
+export function winTree(procs: WinProc[], pid: number): number[] {
+  const born = new Map(procs.map(p => [p.pid, p.started]))
+  return descendants(procs.filter(p => {
+    const parent = born.get(p.ppid)
+    return !!p.started && !!parent && Number(p.started) >= Number(parent)
+  }), pid)
+}
+
 async function killProcess($: EngineInterface, st: State, c: Confirm) {
   st.confirm = null
   const t = tr()
-  // The confirmation may have waited a while: the PID must still be the same process in a fresh sample.
-  await tick($, st)
-  const now = await $.clock.now()
-  if (!st.snap || now - st.snap.ts > STALE_MS || !canKill(st.snap, c.pid, c.name)) {
+  const refuse = () => {
     $.ui.toast(t.cannotKill(c.name, c.pid))
     $.ui.invalidate('ui.render')
-    return
   }
-  const run = (argv: string[], timeoutMs: number) => $.process.run(argv, { timeoutMs, cwd: st.home || undefined })
+  // The confirmation may have waited a while: the PID must still be in a fresh sample under the same name.
+  await tick($, st)
+  const now = await $.clock.now()
+  if (!st.snap || now - st.snap.ts > STALE_MS || !canKill(st.snap, c.pid, c.name)) return refuse()
+  // A sample may be 15 s old, long enough for the PID to pass to a new process of the same name: right
+  // before ending, the live process under the PID must have the start time of the row the user chose.
+  const run = (argv: string[], timeoutMs: number, env?: Record<string, string>) =>
+    $.process.run(argv, { timeoutMs, cwd: st.home || undefined, ...(env ? { env } : {}) })
   let r: { exitCode: number; stdout: string; stderr: string }
   try {
     if (st.platform === 'win32') {
-      r = await run(['taskkill.exe', '/PID', String(c.pid), '/T', '/F'], 15000)
+      const procs = parseWinProcs((await run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', WIN_PROCS], 30000)).stdout)
+      if (!sameProcess(c.started, procs.find(p => p.pid === c.pid)?.started)) return refuse()
+      // The tree by explicit PIDs, children first, not by taskkill /T: see winTree.
+      r = await run(['taskkill.exe', '/F', ...[...winTree(procs, c.pid), c.pid].flatMap(p => ['/PID', String(p)])], 15000)
     } else {
-      // The whole tree, as taskkill /T does: descendants from a fresh ps, then the process itself.
-      const ps = await run(st.platform === 'darwin' ? ['ps', '-axo', 'pid=,ppid=,time=,rss=,comm='] : ['ps', '-eo', 'pid=,ppid=,time=,rss=,comm='], 10000)
-      const tree = [...descendants(parsePs(ps.stdout), c.pid), c.pid].map(String)
-      r = await run(['kill', '-TERM', ...tree], 5000)
+      const listing = async () => parsePs((await run(psArgv(st.platform === 'darwin' ? 'darwin' : 'linux'), 10000, PS_ENV)).stdout)
+      const rows = await listing()
+      if (!sameProcess(c.started, rows.find(x => x.pid === c.pid)?.started)) return refuse()
+      // The whole tree, as on Windows: descendants from this listing, then the process itself.
+      const tree = [...descendants(rows, c.pid), c.pid]
+      r = await run(['kill', '-TERM', ...tree.map(String)], 5000)
       if (r.exitCode === 0) {
         await $.clock.sleep(3000)
-        const left: string[] = []
-        for (const pid of tree) if ((await run(['kill', '-0', pid], 5000)).exitCode === 0) left.push(pid)
+        // SIGKILL only what is still the same process: a PID freed by SIGTERM may be reused within 3 s.
+        const born = new Map(rows.map(x => [x.pid, x.started]))
+        const left = (await listing()).filter(x => tree.includes(x.pid) && sameProcess(born.get(x.pid), x.started)).map(x => String(x.pid))
         if (left.length) r = await run(['kill', '-KILL', ...left], 5000)
       }
     }
@@ -733,7 +784,7 @@ export const register: Register = (on, options) => {
     const chip = (text: string) => <Text dimColor>  {text}</Text>
 
     const killButton = (p: Top, where: string, key: string) => canKill(snap, p.pid) && (
-      <Button key={key} label={t.kill} plain dimColor onPress={() => { st.confirm = { pid: p.pid, name: p.name, where }; $.ui.invalidate('ui.render') }} />
+      <Button key={key} label={t.kill} plain dimColor onPress={() => { st.confirm = { pid: p.pid, name: p.name, where, started: p.started }; $.ui.invalidate('ui.render') }} />
     )
 
     // --- rows ---
@@ -867,7 +918,7 @@ export const register: Register = (on, options) => {
     const confirmBar = st.confirm && (
       <Box marginTop={1} borderStyle="round" borderColor="warning" paddingX={1} flexDirection="column">
         <Text color="warning" bold>{t.killTitle(st.confirm.name, st.confirm.pid)}</Text>
-        {/* Only taskkill /T ends the child processes too; kill on macOS/Linux ends the one PID. */}
+        {/* Both platforms end the process with its descendants from a live listing (killProcess). */}
         <Text dimColor>{st.confirm.where} · {t.killNote}</Text>
         <Box gap={2} marginTop={1}>
           <Button key="kill-yes" label={t.killYes} variant="primary" onPress={() => { const c = st.confirm; if (c) void killProcess($, st, c) }} />

@@ -3,7 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import {
   DEV_NAMES, buildSnapshot, freshMemory, orphanCandidates, parseCpuTime, parseLsofCwd, parseMeminfo, parsePs, parseSessionFile,
-  parseVmStat, repoLabel,
+  parseVmStat, psArgv, repoLabel,
 } from '../hooks/posix'
 import type { PsRow, SessionMeta } from '../hooks/posix'
 
@@ -26,32 +26,42 @@ describe('parsers', () => {
 
   test('parsePs: macOS paths with spaces, login shells, malformed lines', async () => {
     const text = [
-      '    1     0   0:12.50  12000 /sbin/launchd',
-      '  412     1 1:02:03.50 204800 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '  900   412   0:00.10   1024 /Applications/Foo.app/Contents/MacOS/foo helper',
-      '  901     1   0:00.00    512 -zsh',
+      '    1     0   0:12.50  12000 Sun Nov  1 09:00:01 2026     /sbin/launchd',
+      '  412     1 1:02:03.50 204800 Mon Nov  2 01:06:12 2026     /Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '  900   412   0:00.10   1024 Mon Nov  2 10:15:00 2026     /Applications/Foo.app/Contents/MacOS/foo helper',
+      '  901     1   0:00.00    512 Mon Nov  2 10:15:01 2026     -zsh',
       'this is not a ps line',
-      '  902     1   bad-time    512 node',
+      '  902     1   bad-time    512 Mon Nov  2 10:15:02 2026     node',
       '',
     ].join('\n')
     expect(parsePs(text)).toEqual([
-      { pid: 1, ppid: 0, cpuSec: 12.5, rssKB: 12000, name: 'launchd' },
-      { pid: 412, ppid: 1, cpuSec: 3723.5, rssKB: 204800, name: 'Google Chrome' },
-      { pid: 900, ppid: 412, cpuSec: 0.1, rssKB: 1024, name: 'foo helper' },
-      { pid: 901, ppid: 1, cpuSec: 0, rssKB: 512, name: 'zsh' },
+      { pid: 1, ppid: 0, cpuSec: 12.5, rssKB: 12000, name: 'launchd', started: 'Sun Nov 1 09:00:01 2026' },
+      { pid: 412, ppid: 1, cpuSec: 3723.5, rssKB: 204800, name: 'Google Chrome', started: 'Mon Nov 2 01:06:12 2026' },
+      { pid: 900, ppid: 412, cpuSec: 0.1, rssKB: 1024, name: 'foo helper', started: 'Mon Nov 2 10:15:00 2026' },
+      { pid: 901, ppid: 1, cpuSec: 0, rssKB: 512, name: 'zsh', started: 'Mon Nov 2 10:15:01 2026' },
     ])
   })
 
   test('parsePs: Linux names, kernel threads, deleted binaries', async () => {
     const text = [
-      '    1     0 00:00:04  11216 systemd',
-      '  210     2 00:00:00      0 kworker/0:1',
-      ' 3000  1000 1-02:03:04  51200 node',
-      ' 3001  1000 00:01:00   2048 python3 (deleted)',
+      '    1     0 00:00:04  11216 Sun Nov  1 09:00:01 2026 systemd',
+      '  210     2 00:00:00      0 Sun Nov  1 09:00:02 2026 kworker/0:1',
+      ' 3000  1000 1-02:03:04  51200 Mon Nov  2 01:06:12 2026 node',
+      ' 3001  1000 00:01:00   2048 Mon Nov  2 01:06:13 2026 python3 (deleted)',
     ].join('\r\n')
     const rows = parsePs(text)
     expect(rows.map(r => r.name)).toEqual(['systemd', 'kworker/0:1', 'node', 'python3'])
-    expect(rows[2]).toEqual({ pid: 3000, ppid: 1000, cpuSec: 93784, rssKB: 51200, name: 'node' })
+    expect(rows[2]).toEqual({ pid: 3000, ppid: 1000, cpuSec: 93784, rssKB: 51200, name: 'node', started: 'Mon Nov 2 01:06:12 2026' })
+  })
+
+  test('parsePs: lstart is five words before comm; a ps without lstart (busybox) parses with no start time', async () => {
+    // Without the lstart words a name of five words or fewer would be read as a start time: the caller says which.
+    const withStart = parsePs(' 3000  1000 00:00:01  51200 Mon Nov 12 23:59:59 2026 Google Chrome Helper (Renderer)')
+    expect(withStart[0]).toEqual({ pid: 3000, ppid: 1000, cpuSec: 1, rssKB: 51200, name: 'Google Chrome Helper (Renderer)', started: 'Mon Nov 12 23:59:59 2026' })
+    expect(parsePs(' 3000  1000 00:00:01  51200 node', true)).toEqual([])
+    expect(parsePs(' 3000  1000 00:00:01  51200 node', false)).toEqual([{ pid: 3000, ppid: 1000, cpuSec: 1, rssKB: 51200, name: 'node' }])
+    expect(psArgv('darwin')).toEqual(['ps', '-axo', 'pid=,ppid=,time=,rss=,lstart=,comm='])
+    expect(psArgv('linux', false)).toEqual(['ps', '-eo', 'pid=,ppid=,time=,rss=,comm='])
   })
 
   test('parseMeminfo and parseVmStat', async () => {
@@ -305,5 +315,24 @@ describe('buildSnapshot', () => {
     const snap = buildSnapshot({ now: T1, intervalMs: 4000, cores: 2, mem, rows: cyc, sessions, cwdOf: new Map() }, freshMemory())
     expect(snap.sessions).toEqual([])
     expect(snap.outside.map(o => o.name).sort()).toEqual(['a', 'b', 'c'])
+  })
+
+  test('top rows carry the start time; a shell a nested session runs in is never in top', async () => {
+    const at = (s: number) => `Mon Nov  2 10:00:${String(s).padStart(2, '0')} 2026`
+    const rs: PsRow[] = [
+      { pid: 1, ppid: 0, cpuSec: 5, rssKB: 10 * MB, name: 'launchd', started: at(0) },
+      { pid: 100, ppid: 1, cpuSec: 1, rssKB: 300 * MB, name: 'claude', started: at(1) },
+      { pid: 110, ppid: 100, cpuSec: 1, rssKB: 900 * MB, name: 'bash', started: at(2) }, // hosts session 120
+      { pid: 120, ppid: 110, cpuSec: 1, rssKB: 300 * MB, name: 'claude', started: at(3) },
+      { pid: 130, ppid: 100, cpuSec: 1, rssKB: 200 * MB, name: 'node', started: at(4) },
+      { pid: 200, ppid: 1, cpuSec: 1, rssKB: 500 * MB, name: 'node', started: at(5) }, // orphan
+    ]
+    const nested: SessionMeta[] = [sessions[0], { pid: 120, sessionId: 'S3', hostSessionId: '', name: 'Nested', status: 'idle', cwd: '/home/u/repo' }]
+    const snap = buildSnapshot({ now: T1, intervalMs: 4000, cores: 4, mem, rows: rs, sessions: nested, cwdOf: new Map([[200, '/home/u/proj']]) }, freshMemory())
+    const main = snap.sessions.find(s => s.sessionId === 'S1')!
+    expect(main.procs).toBe(3)
+    expect(main.top.map(t => t.pid)).toEqual([100, 130])
+    expect(main.top[1].started).toBe(at(4))
+    expect(snap.orphans[0].top[0]).toEqual({ name: 'node', pid: 200, cpu: 0, memMB: 500, started: at(5) })
   })
 })
