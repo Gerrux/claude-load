@@ -29,6 +29,16 @@
   .select::after { content: "  ⌄"; color: var(--dim); }
   .grow { flex: 1; }
   .primary { background: var(--accent); color: #fff; border-radius: 7px; padding: 4px 11px; font-weight: 600; }
+  .claude { border: 1px solid var(--accent); border-radius: 8px; padding: 3px 10px; display: flex; gap: 7px; align-items: center; font-weight: 600; }
+  .claude b { color: var(--accent); font-size: 14px; }
+  .confirm { border: 1px solid var(--warn); border-radius: 10px; padding: 8px 12px; margin-top: 12px; }
+  .confirm .q { color: var(--warn); font-weight: 700; }
+  .confirm .note { color: var(--dim); font-size: 12px; margin-top: 2px; }
+  .confirm .btns { display: flex; gap: 10px; margin-top: 8px; }
+  .row.line { grid-template-columns: 20px 1fr auto 70px; }
+  .row.line .acts { display: flex; gap: 12px; color: var(--faint); font-size: 12px; margin-right: 12px; }
+  .row.out { grid-template-columns: 20px 1fr auto 96px 70px; }
+  .pid { padding-left: 40px; color: var(--dim); font-size: 12px; margin-top: 1px; }
   .section { margin-top: 14px; font-weight: 700; letter-spacing: .03em; font-size: 12px; }
   .section span { color: var(--dim); font-weight: 400; letter-spacing: 0; margin-left: 8px; }
   .row { display: grid; grid-template-columns: 20px 1fr 96px 70px; align-items: center; margin-top: 9px; }
@@ -102,7 +112,11 @@ const demo = {
     { name: 'Dark mode for settings', mem: 655 }, { name: 'Investigate memory leak', mem: 590 },
   ],
   orphans: [{ label: 'webapp/feat-search', cpu: 9, mem: 1350, procs: 3, pid: 48210, name: 'node', owners: 'Fix flaky end-to-end tests', h: hist(8, 1, 90, 5) }],
-  outside: [{ name: 'Claude Desktop', count: 12, cpu: 6, mem: 3060 }, { name: 'chrome', count: 31, cpu: 4, mem: 5240 }, { name: 'Docker Desktop', count: 2, cpu: 3, mem: 960 }, { name: 'slack', count: 5, cpu: 1, mem: 710 }],
+  outside: [
+    { name: 'Claude Desktop', count: 12, cpu: 6, mem: 3060 },
+    { name: 'chrome', count: 31, cpu: 4, mem: 5240, open: [{ pid: 30412, cpu: 2, mem: 980 }, { pid: 30588, cpu: 1, mem: 760 }, { pid: 29960, cpu: 0, mem: 610 }] },
+    { name: 'Docker Desktop', count: 2, cpu: 3, mem: 960 }, { name: 'slack', count: 5, cpu: 1, mem: 710 },
+  ],
   mcpu: hist(32, 39, 90, 2), mmem: hist(60, 4, 90, 9).map(x => Math.min(100, x)),
 }
 const scale = Math.max(5, ...demo.active.map(r => r.cpu), ...demo.orphans.map(o => o.cpu))
@@ -117,11 +131,16 @@ function pane() {
   const active = d.active.map(r => `
     <div class="row">${icon(r.status)}<div class="name ${r.self ? 'self' : ''}">${r.name}</div>${cpuCell(r.cpu)}<div class="mem ${memCls(r.mem)}">${mem(r.mem)}</div></div>
     <div class="sub">${spark(r.h, 84, 14, HEX[tone(Math.max(r.cpu, ...r.h.slice(-5)))])}<span class="meta" ${r.self ? 'style="color:var(--accent)"' : ''}>${r.procs} processes · ${r.meta}</span><span class="act">processes</span>${r.self ? '' : '<span class="act">open ↗</span>'}</div>`).join('')
-  const idle = d.idle.map(r => `<div class="row idle">${icon('idle')}<div class="name">${r.name}</div><div></div><div class="mem" style="color:var(--dim)">${mem(r.mem)}</div></div>`).join('')
+  const idle = d.idle.map(r => `<div class="row idle line">${icon('idle')}<div class="name">${r.name}</div><div class="acts"><span>processes</span><span>open ↗</span></div><div class="mem" style="color:var(--dim)">${mem(r.mem)}</div></div>`).join('')
   const orphans = d.orphans.map(o => `
     <div class="row">${icon('orphan')}<div class="name">${o.label}</div>${cpuCell(o.cpu)}<div class="mem">${mem(o.mem)}</div></div>
     <div class="sub">${spark(o.h, 84, 14, HEX[tone(o.cpu)])}<span>#${o.pid} ${o.name}</span><span class="act">end</span><span class="meta">· in this repo: ${o.owners}</span></div>`).join('')
-  const outside = d.outside.map(x => `<div class="row idle">${icon('proc')}<div class="name">${x.name} <span style="color:var(--faint)">×${x.count}</span></div>${cpuCell(x.cpu)}<div class="mem ${memCls(x.mem)}" style="${memCls(x.mem) ? '' : 'color:var(--dim)'}">${mem(x.mem)}</div></div>`).join('')
+  const outside = d.outside.map(x => `<div class="row idle out">${icon('proc')}<div class="name">${x.name} <span style="color:var(--faint)">×${x.count}</span></div><span class="act" style="font-size:12px;margin-right:6px">${x.open ? 'collapse' : 'processes'}</span>${cpuCell(x.cpu)}<div class="mem ${memCls(x.mem)}" style="${memCls(x.mem) ? '' : 'color:var(--dim)'}">${mem(x.mem)}</div></div>` +
+    (x.open ?? []).map(p => `<div class="pid">#${p.pid} ${x.name} · ${pct(p.cpu)} · ${mem(p.mem)}</div>`).join('')).join('')
+  const o0 = d.orphans[0]
+  const confirm = `<div class="confirm"><div class="q">End ${o0.name} #${o0.pid}?</div>
+    <div class="note">orphan ${o0.label} · 3 processes · ${mem(o0.mem)} · together with its child processes</div>
+    <div class="btns"><span class="primary">Yes, end it</span><span class="chip">Cancel</span></div></div>`
   const claudeCpu = d.active.reduce((a, r) => a + r.cpu, 0), claudeMem = d.active.reduce((a, r) => a + r.mem, 0) + d.idle.reduce((a, r) => a + r.mem, 0)
   return `<div class="pane">
     <div class="title"><span>Load by session</span><span>⤢ ✕</span></div>
@@ -131,7 +150,8 @@ function pane() {
       <div class="machine">${icon('machine')}<span>Claude: 7 sessions · ${pct(claudeCpu)} CPU · ${mem(claudeMem)} · 16 threads · ${d.age} s ago</span></div>
     </div>
     <div class="chips"><span class="chip on">All</span><span class="chip">Active</span><span class="chip">Heavy</span><span class="chip">Orphans</span><span class="chip">This window</span></div>
-    <div class="tools"><span>Group <span class="select">by session</span></span><span>Sort <span class="select">by CPU</span></span><span class="grow"></span><span class="act">↻</span><span class="primary">✨ Sort it out with Claude</span></div>
+    <div class="tools"><span>Group <span class="select">by session</span></span><span>Sort <span class="select">by CPU</span></span><span class="grow"></span><span class="act">↻</span><span class="claude"><b>✻</b>Sort it out with Claude</span></div>
+    ${confirm}
     <div class="section">ACTIVE<span>3 · ${pct(claudeCpu)} CPU · ${mem(d.active.reduce((a, r) => a + r.mem, 0))}</span></div>
     ${active}
     <div class="section">IDLE<span>4 · ${mem(d.idle.reduce((a, r) => a + r.mem, 0))}</span></div>
