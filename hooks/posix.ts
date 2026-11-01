@@ -6,7 +6,8 @@
 
 import type { ByName, OrphanLoad, OutsideLoad, SessionLoad, Snapshot, Top } from './types'
 
-export type PsRow = { pid: number; ppid: number; cpuSec: number; rssKB: number; name: string }
+/** `started`: the ps `lstart` column, its words joined by single spaces; absent when ps has no such column. */
+export type PsRow = { pid: number; ppid: number; cpuSec: number; rssKB: number; name: string; started?: string }
 export type SessionMeta = { pid: number; sessionId: string; hostSessionId: string; name: string; status: string; cwd: string }
 export type SamplerMemory = { prevCpu: Map<number, number>; prevAt: number; hist: Map<string, number[]> }
 
@@ -41,16 +42,40 @@ function commName(comm: string): string {
   return c.replace(/^-(?=[A-Za-z])/, '') // login shells show as "-zsh"
 }
 
-/** Output of `ps -axo pid=,ppid=,time=,rss=,comm=` (macOS) or `ps -eo ...` (Linux). Malformed lines are skipped. */
-export function parsePs(text: string): PsRow[] {
+/**
+ * The ps columns parsePs reads: `ps -axo` (macOS) or `ps -eo` (Linux). `lstart` is the start time,
+ * five words ("Mon Nov  2 01:06:12 2026") when ps runs in the C locale (PS_ENV); without it the
+ * columns of a ps that lacks `lstart` (busybox).
+ */
+export function psArgv(platform: 'darwin' | 'linux', withStart = true): string[] {
+  return ['ps', platform === 'darwin' ? '-axo' : '-eo', withStart ? 'pid=,ppid=,time=,rss=,lstart=,comm=' : 'pid=,ppid=,time=,rss=,comm=']
+}
+
+/**
+ * macOS ps formats `lstart` with the locale's `%c`: in the C time locale it is always five words.
+ * Only LC_TIME (an empty LC_ALL counts as unset): LC_ALL=C would print non-ASCII names as `?`.
+ * And in UTC: every session's ps, and the skill's, must print one process's start time alike.
+ */
+export const PS_ENV = { LC_ALL: '', LC_TIME: 'C', TZ: 'UTC' }
+
+/** The snapshot format these samplers write (Snapshot.v). */
+export const SNAP_V = 2
+
+/** Output of psArgv's ps, with or without `lstart`. Malformed lines are skipped. */
+export function parsePs(text: string, withStart = true): PsRow[] {
   const rows: PsRow[] = []
+  const re = withStart
+    ? /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(\S.*?)\s*$/
+    : /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+()(\S.*?)\s*$/
   for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(\S.*?)\s*$/.exec(line)
+    const m = re.exec(line)
     if (!m) continue
     const cpuSec = parseCpuTime(m[3])
-    const name = commName(m[5])
+    const name = commName(m[6])
     if (Number.isNaN(cpuSec) || !name) continue
-    rows.push({ pid: Number(m[1]), ppid: Number(m[2]), cpuSec, rssKB: Number(m[4]), name })
+    const row: PsRow = { pid: Number(m[1]), ppid: Number(m[2]), cpuSec, rssKB: Number(m[4]), name }
+    if (m[5]) row.started = m[5].split(/\s+/).join(' ')
+    rows.push(row)
   }
   return rows
 }
@@ -115,7 +140,7 @@ export function repoLabel(dir: string): { root: string; label: string } | null {
 
 // ---------------------------------------------------------------- analysis
 
-type Proc = { pid: number; name: string; cpu: number; rssKB: number }
+type Proc = { pid: number; name: string; cpu: number; rssKB: number; started?: string }
 type Folded = { name: string; count: number; cpu: number; rssKB: number }
 
 const round1 = (x: number) => Math.round(x * 10) / 10
@@ -133,7 +158,7 @@ function analyze(rows: PsRow[], sessions: SessionMeta[], memory: SamplerMemory, 
     byPid.set(r.pid, r)
     const prev = memory.prevCpu.get(r.pid)
     const cpu = dtSec > 0 && prev !== undefined ? Math.max(0, (r.cpuSec - prev) / (dtSec * Math.max(1, cores)) * 100) : 0
-    procs.push({ pid: r.pid, name: r.name, cpu, rssKB: r.rssKB })
+    procs.push({ pid: r.pid, name: r.name, cpu, rssKB: r.rssKB, started: r.started })
   }
   const live = new Map<number, SessionMeta>()
   for (const s of sessions) if (byPid.has(s.pid) && !live.has(s.pid)) live.set(s.pid, s)
@@ -225,7 +250,7 @@ export function orphanCandidates(rows: PsRow[], sessions: SessionMeta[], memory:
   return out
 }
 
-const toTop = (p: Proc): Top => ({ name: p.name, pid: p.pid, cpu: round1(p.cpu), memMB: toMB(p.rssKB) })
+const toTop = (p: Proc): Top => ({ name: p.name, pid: p.pid, cpu: round1(p.cpu), memMB: toMB(p.rssKB), ...(p.started ? { started: p.started } : {}) })
 const topOf = (procs: Proc[], n: number): Top[] => [...procs].sort(heavier).slice(0, n).map(toTop)
 
 function fold(procs: Proc[]): Folded[] {
@@ -259,7 +284,7 @@ export function buildSnapshot(
   const { now, cores, mem, cwdOf } = input
   const selfPids = input.selfPids ?? []
   const analysis = analyze(input.rows, input.sessions, memory, now, cores)
-  const { procs, live, ownerOf, dtSec } = analysis
+  const { procs, live, ownerOf, dtSec, hosts } = analysis
   const warm = dtSec > 0
 
   const owned = new Map<number, Proc[]>()
@@ -294,7 +319,10 @@ export function buildSnapshot(
 
   const sessionRows = [...live.values()].map(s => {
     const l = owned.get(s.pid) ?? []
-    return { s, cpu: sum(l, 'cpu'), load: { ...s, cpu: 0, memMB: toMB(sum(l, 'rssKB')), procs: l.length, top: topOf(l, 4), byName: topFolded(fold(l), 8) } as SessionLoad }
+    // `top` is what the end button offers: never a process above another session (a shell a nested
+    // session runs in), whose tree holds that session.
+    const top = topOf(l.filter(p => p.pid === s.pid || !hosts.has(p.pid)), 4)
+    return { s, cpu: sum(l, 'cpu'), load: { ...s, cpu: 0, memMB: toMB(sum(l, 'rssKB')), procs: l.length, top, byName: topFolded(fold(l), 8) } as SessionLoad }
   })
   sessionRows.sort((a, b) => b.cpu - a.cpu || a.s.pid - b.s.pid)
   for (const r of sessionRows) r.load.cpu = round1(r.cpu)
@@ -336,6 +364,7 @@ export function buildSnapshot(
   memory.prevAt = now
 
   return {
+    v: SNAP_V,
     ts: now,
     intervalMs: input.intervalMs,
     cores,
