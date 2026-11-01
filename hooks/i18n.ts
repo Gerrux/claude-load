@@ -68,6 +68,8 @@ export type Dict = {
   killYes: string
   killNo: string
   killed: (name: string, pid: number, where: string) => string
+  /** After `killed`: the memory the ended tree held (working sets overlap: "about"). */
+  freed: (mem: string) => string
   killFailed: (name: string, pid: number, why: string) => string
   cannotKill: (name: string, pid: number) => string
   openFailed: (why: string) => string
@@ -76,6 +78,9 @@ export type Dict = {
   headLine: (sessions: string, cpu: string, mem: string, threads: string, ageS: number) => string
   footer: (minutes: number) => string
   graphAlt: (minutes: number) => string
+  /** The same two while sorted by memory: the graphs then show memory. */
+  footerMem: (minutes: number) => string
+  graphAltMem: (minutes: number) => string
   bandLabel: string
   /** Plain-text report, the answer of /load in the transcript. */
   reportClaude: (sessions: string, cpu: string, mem: string, ageS: number) => string
@@ -111,7 +116,7 @@ const en: Dict = {
   sortLabel: 'Sort ',
   sortCpu: 'by CPU',
   sortMem: 'by memory',
-  triage: '✨ Sort it out with Claude',
+  triage: 'Sort it out with Claude',
   triageToast: 'Claude is sorting out the load; the answer appears in this session',
 
   sectionActive: 'Active',
@@ -142,6 +147,7 @@ const en: Dict = {
   killYes: 'Yes, end it',
   killNo: 'Cancel',
   killed: (name, pid, where) => `Ended ${name} #${pid} (${where})`,
+  freed: mem => `about ${mem} freed`,
   killFailed: (name, pid, why) => `Could not end ${name} #${pid}: ${why}`,
   cannotKill: (name, pid) => `${name} #${pid}: this process cannot be ended from here`,
   openFailed: why => `Could not open the session: ${why}`,
@@ -149,6 +155,8 @@ const en: Dict = {
   headLine: (sessions, cpu, mem, threads, ageS) => `${sessions} · ${cpu} CPU · ${mem} · ${threads} · ${ageS} s ago`,
   footer: m => `graphs show CPU over ${m} min · /load band on|off|auto controls the line above the prompt`,
   graphAlt: m => `CPU over ${m} min`,
+  footerMem: m => `graphs show memory over ${m} min · /load band on|off|auto controls the line above the prompt`,
+  graphAltMem: m => `memory over ${m} min`,
   bandLabel: 'load',
   reportClaude: (sessions, cpu, mem, ageS) => `Claude: ${sessions} · ${cpu} CPU · ${mem} · sampled ${ageS} s ago`,
   memOf: (used, total) => `${used} of ${total}`,
@@ -183,7 +191,7 @@ const ru: Dict = {
   sortLabel: 'Сортировка ',
   sortCpu: 'по CPU',
   sortMem: 'по памяти',
-  triage: '✨ Разобрать с Claude',
+  triage: 'Разобрать с Claude',
   triageToast: 'Claude разбирает нагрузку — ответ появится в этой сессии',
 
   sectionActive: 'Активные',
@@ -214,6 +222,7 @@ const ru: Dict = {
   killYes: 'Да, завершить',
   killNo: 'Отмена',
   killed: (name, pid, where) => `Завершён ${name} #${pid} (${where})`,
+  freed: mem => `освобождено около ${mem}`,
   killFailed: (name, pid, why) => `Не удалось завершить ${name} #${pid}: ${why}`,
   cannotKill: (name, pid) => `${name} #${pid}: этот процесс отсюда завершать нельзя`,
   openFailed: why => `Не удалось открыть сессию: ${why}`,
@@ -221,6 +230,8 @@ const ru: Dict = {
   headLine: (sessions, cpu, mem, threads, ageS) => `${sessions} · ${cpu} CPU · ${mem} · ${threads} · ${ageS} с назад`,
   footer: m => `графики — CPU за ${m} мин · /load band on|off|auto — строка над вводом`,
   graphAlt: m => `CPU за ${m} мин`,
+  footerMem: m => `графики — память за ${m} мин · /load band on|off|auto — строка над вводом`,
+  graphAltMem: m => `память за ${m} мин`,
   bandLabel: 'нагрузка',
   reportClaude: (sessions, cpu, mem, ageS) => `Claude: ${sessions} · ${cpu} CPU · ${mem} · снимок ${ageS} с назад`,
   memOf: (used, total) => `${used} из ${total}`,
@@ -255,7 +266,7 @@ const de: Dict = {
   sortLabel: 'Sortieren ',
   sortCpu: 'nach CPU',
   sortMem: 'nach Speicher',
-  triage: '✨ Mit Claude aufräumen',
+  triage: 'Mit Claude aufräumen',
   triageToast: 'Claude räumt die Last auf; die Antwort erscheint in dieser Sitzung',
 
   sectionActive: 'Aktiv',
@@ -286,6 +297,7 @@ const de: Dict = {
   killYes: 'Ja, beenden',
   killNo: 'Abbrechen',
   killed: (name, pid, where) => `${name} #${pid} beendet (${where})`,
+  freed: mem => `etwa ${mem} frei geworden`,
   killFailed: (name, pid, why) => `${name} #${pid} konnte nicht beendet werden: ${why}`,
   cannotKill: (name, pid) => `${name} #${pid}: Dieser Prozess kann von hier nicht beendet werden`,
   openFailed: why => `Sitzung konnte nicht geöffnet werden: ${why}`,
@@ -293,6 +305,8 @@ const de: Dict = {
   headLine: (sessions, cpu, mem, threads, ageS) => `${sessions} · ${cpu} CPU · ${mem} · ${threads} · vor ${ageS} s`,
   footer: m => `Graphen zeigen CPU der letzten ${m} Min. · /load band on|off|auto steuert die Zeile über der Eingabe`,
   graphAlt: m => `CPU der letzten ${m} Min.`,
+  footerMem: m => `Graphen zeigen Speicher der letzten ${m} Min. · /load band on|off|auto steuert die Zeile über der Eingabe`,
+  graphAltMem: m => `Speicher der letzten ${m} Min.`,
   bandLabel: 'Last',
   reportClaude: (sessions, cpu, mem, ageS) => `Claude: ${sessions} · ${cpu} CPU · ${mem} · gemessen vor ${ageS} s`,
   memOf: (used, total) => `${used} von ${total}`,
@@ -327,7 +341,7 @@ const es: Dict = {
   sortLabel: 'Ordenar ',
   sortCpu: 'por CPU',
   sortMem: 'por memoria',
-  triage: '✨ Resolver con Claude',
+  triage: 'Resolver con Claude',
   triageToast: 'Claude está revisando la carga; la respuesta aparecerá en esta sesión',
 
   sectionActive: 'Activos',
@@ -358,6 +372,7 @@ const es: Dict = {
   killYes: 'Sí, terminar',
   killNo: 'Cancelar',
   killed: (name, pid, where) => `${name} #${pid} terminado (${where})`,
+  freed: mem => `liberados unos ${mem}`,
   killFailed: (name, pid, why) => `No se pudo terminar ${name} #${pid}: ${why}`,
   cannotKill: (name, pid) => `${name} #${pid}: este proceso no se puede terminar desde aquí`,
   openFailed: why => `No se pudo abrir la sesión: ${why}`,
@@ -365,6 +380,8 @@ const es: Dict = {
   headLine: (sessions, cpu, mem, threads, ageS) => `${sessions} · ${cpu} CPU · ${mem} · ${threads} · hace ${ageS} s`,
   footer: m => `los gráficos muestran la CPU de ${m} min · /load band on|off|auto controla la línea sobre el prompt`,
   graphAlt: m => `CPU en ${m} min`,
+  footerMem: m => `los gráficos muestran la memoria de ${m} min · /load band on|off|auto controla la línea sobre el prompt`,
+  graphAltMem: m => `memoria en ${m} min`,
   bandLabel: 'carga',
   reportClaude: (sessions, cpu, mem, ageS) => `Claude: ${sessions} · ${cpu} CPU · ${mem} · muestreado hace ${ageS} s`,
   memOf: (used, total) => `${used} de ${total}`,
@@ -399,7 +416,7 @@ const fr: Dict = {
   sortLabel: 'Trier ',
   sortCpu: 'par CPU',
   sortMem: 'par mémoire',
-  triage: '✨ Faire le tri avec Claude',
+  triage: 'Faire le tri avec Claude',
   triageToast: 'Claude fait le tri dans la charge ; la réponse apparaîtra dans cette session',
 
   sectionActive: 'Actifs',
@@ -430,6 +447,7 @@ const fr: Dict = {
   killYes: 'Oui, arrêter',
   killNo: 'Annuler',
   killed: (name, pid, where) => `${name} #${pid} arrêté (${where})`,
+  freed: mem => `environ ${mem} libérés`,
   killFailed: (name, pid, why) => `Impossible d'arrêter ${name} #${pid} : ${why}`,
   cannotKill: (name, pid) => `${name} #${pid} : ce processus ne peut pas être arrêté d'ici`,
   openFailed: why => `Impossible d'ouvrir la session : ${why}`,
@@ -437,6 +455,8 @@ const fr: Dict = {
   headLine: (sessions, cpu, mem, threads, ageS) => `${sessions} · ${cpu} CPU · ${mem} · ${threads} · il y a ${ageS} s`,
   footer: m => `les graphiques montrent le CPU sur ${m} min · /load band on|off|auto règle la ligne au-dessus de la saisie`,
   graphAlt: m => `CPU sur ${m} min`,
+  footerMem: m => `les graphiques montrent la mémoire sur ${m} min · /load band on|off|auto règle la ligne au-dessus de la saisie`,
+  graphAltMem: m => `mémoire sur ${m} min`,
   bandLabel: 'charge',
   reportClaude: (sessions, cpu, mem, ageS) => `Claude : ${sessions} · ${cpu} CPU · ${mem} · mesuré il y a ${ageS} s`,
   memOf: (used, total) => `${used} sur ${total}`,
@@ -471,7 +491,7 @@ const pt: Dict = {
   sortLabel: 'Ordenar ',
   sortCpu: 'por CPU',
   sortMem: 'por memória',
-  triage: '✨ Resolver com o Claude',
+  triage: 'Resolver com o Claude',
   triageToast: 'O Claude está analisando a carga; a resposta aparecerá nesta sessão',
 
   sectionActive: 'Ativos',
@@ -502,6 +522,7 @@ const pt: Dict = {
   killYes: 'Sim, encerrar',
   killNo: 'Cancelar',
   killed: (name, pid, where) => `${name} #${pid} encerrado (${where})`,
+  freed: mem => `cerca de ${mem} liberados`,
   killFailed: (name, pid, why) => `Não foi possível encerrar ${name} #${pid}: ${why}`,
   cannotKill: (name, pid) => `${name} #${pid}: este processo não pode ser encerrado daqui`,
   openFailed: why => `Não foi possível abrir a sessão: ${why}`,
@@ -509,6 +530,8 @@ const pt: Dict = {
   headLine: (sessions, cpu, mem, threads, ageS) => `${sessions} · ${cpu} CPU · ${mem} · ${threads} · há ${ageS} s`,
   footer: m => `os gráficos mostram a CPU em ${m} min · /load band on|off|auto controla a linha acima do prompt`,
   graphAlt: m => `CPU em ${m} min`,
+  footerMem: m => `os gráficos mostram a memória em ${m} min · /load band on|off|auto controla a linha acima do prompt`,
+  graphAltMem: m => `memória em ${m} min`,
   bandLabel: 'carga',
   reportClaude: (sessions, cpu, mem, ageS) => `Claude: ${sessions} · ${cpu} CPU · ${mem} · medido há ${ageS} s`,
   memOf: (used, total) => `${used} de ${total}`,
@@ -543,7 +566,7 @@ const zh: Dict = {
   sortLabel: '排序 ',
   sortCpu: '按 CPU',
   sortMem: '按内存',
-  triage: '✨ 让 Claude 来整理',
+  triage: '让 Claude 来整理',
   triageToast: 'Claude 正在整理负载，答复将显示在此会话中',
 
   sectionActive: '活跃',
@@ -574,6 +597,7 @@ const zh: Dict = {
   killYes: '是，结束',
   killNo: '取消',
   killed: (name, pid, where) => `已结束 ${name} #${pid}（${where}）`,
+  freed: mem => `约释放 ${mem}`,
   killFailed: (name, pid, why) => `无法结束 ${name} #${pid}：${why}`,
   cannotKill: (name, pid) => `${name} #${pid}：无法在此结束该进程`,
   openFailed: why => `无法打开会话：${why}`,
@@ -581,6 +605,8 @@ const zh: Dict = {
   headLine: (sessions, cpu, mem, threads, ageS) => `${sessions} · ${cpu} CPU · ${mem} · ${threads} · ${ageS} 秒前`,
   footer: m => `图表显示最近 ${m} 分钟的 CPU · /load band on|off|auto 控制输入框上方的负载行`,
   graphAlt: m => `最近 ${m} 分钟的 CPU`,
+  footerMem: m => `图表显示最近 ${m} 分钟的内存 · /load band on|off|auto 控制输入框上方的负载行`,
+  graphAltMem: m => `最近 ${m} 分钟的内存`,
   bandLabel: '负载',
   reportClaude: (sessions, cpu, mem, ageS) => `Claude：${sessions} · ${cpu} CPU · ${mem} · ${ageS} 秒前采样`,
   memOf: (used, total) => `${used} / ${total}`,
@@ -615,7 +641,7 @@ const ja: Dict = {
   sortLabel: '並べ替え ',
   sortCpu: 'CPU 順',
   sortMem: 'メモリ順',
-  triage: '✨ Claude に整理してもらう',
+  triage: 'Claude に整理してもらう',
   triageToast: 'Claude が負荷を整理しています。回答はこのセッションに表示されます',
 
   sectionActive: 'アクティブ',
@@ -646,6 +672,7 @@ const ja: Dict = {
   killYes: 'はい、終了',
   killNo: 'キャンセル',
   killed: (name, pid, where) => `${name} #${pid} を終了しました（${where}）`,
+  freed: mem => `約 ${mem} を解放`,
   killFailed: (name, pid, why) => `${name} #${pid} を終了できませんでした：${why}`,
   cannotKill: (name, pid) => `${name} #${pid}：このプロセスはここから終了できません`,
   openFailed: why => `セッションを開けませんでした：${why}`,
@@ -653,6 +680,8 @@ const ja: Dict = {
   headLine: (sessions, cpu, mem, threads, ageS) => `${sessions} · ${cpu} CPU · ${mem} · ${threads} · ${ageS} 秒前`,
   footer: m => `グラフは直近 ${m} 分の CPU を表示 · /load band on|off|auto で入力欄の上の行を切り替え`,
   graphAlt: m => `直近 ${m} 分の CPU`,
+  footerMem: m => `グラフは直近 ${m} 分のメモリを表示 · /load band on|off|auto で入力欄の上の行を切り替え`,
+  graphAltMem: m => `直近 ${m} 分のメモリ`,
   bandLabel: '負荷',
   reportClaude: (sessions, cpu, mem, ageS) => `Claude：${sessions} · ${cpu} CPU · ${mem} · ${ageS} 秒前にサンプリング`,
   memOf: (used, total) => `${used} / ${total}`,

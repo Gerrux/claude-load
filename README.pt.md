@@ -78,7 +78,7 @@ Gerenciador de Tarefas mostra um paredão de `node` e `claude`. O claude-load di
 | ⚠️ **Órfãos** | processos de desenvolvimento cujo processo pai morreu (um servidor vite, um servidor de linguagem, uma execução de Python deixada para trás), situados no seu repositório ou worktree pelo diretório de trabalho e encerrados com um clique após uma confirmação |
 | 🧩 **Todo o resto** | outros processos agrupados por nome (`chrome ×31`), para você ver se o problema é mesmo o Claude |
 | 🔎 **Filtros e grupos** | Todos · Ativos · Pesados · Órfãos · Esta janela; por sessão, por repositório (com os worktrees incorporados), por processo; ordenação por CPU ou memória |
-| ✨ **Resolver com o Claude** | um botão: a skill `sessions-triage` incluída classifica as sessões ociosas e os órfãos, pergunta uma única vez e arquiva ou encerra somente o que você aprovar |
+| ✻ **Resolver com o Claude** | um botão: a skill `sessions-triage` incluída classifica as sessões ociosas e os órfãos, pergunta uma única vez e arquiva ou encerra somente o que você aprovar |
 | 🚦 **Linha de carga** | acima do prompt sob carga alta (CPU ≥ 50% ou memória ≥ 85%), com os maiores consumidores |
 | 🌍 **8 idiomas** | English, Русский, Deutsch, Español, Français, Português, 中文, 日本語 |
 
@@ -98,7 +98,7 @@ No painel:
   com o mesmo nome. Os processos `claude` das próprias sessões e os PIDs que não estão na
   amostra atual não podem ser encerrados por aqui.
 - **abrir ↗** muda para aquela sessão no aplicativo desktop do Claude.
-- **✨ Resolver com o Claude** pede ao Claude, na sessão atual, que analise a carga.
+- **✻ Resolver com o Claude** pede ao Claude, na sessão atual, que analise a carga.
   Arquivar sessões exige as ferramentas de sessão do aplicativo desktop; em um terminal, o
   Claude diz o que você deve fechar.
 

@@ -20,7 +20,7 @@ const run = (args: string) => ({ command: 'load', args, origin: { kind: 'compose
 
 function snapshot(over: Partial<Snapshot> = {}): Snapshot {
   return {
-    v: 2, ts: NOW, intervalMs: 4000, cores: 16, cpu: 72, memTotalMB: 65457, memUsedMB: 42000, warm: true,
+    v: 3, ts: NOW, intervalMs: 4000, cores: 16, cpu: 72, memTotalMB: 65457, memUsedMB: 42000, warm: true,
     sessions: [
       {
         pid: 1, name: 'Power line processing', status: 'busy', cwd: 'C:\\repo\\pipeline', hostSessionId: 'local_aaaa-1', sessionId: 'S1',
@@ -39,12 +39,15 @@ function snapshot(over: Partial<Snapshot> = {}): Snapshot {
   }
 }
 
-// The Windows live listing (`pid ppid createdMs`) as the kill path reads it right before ending:
-// node #21 as sampled, its child #22, and #23, older than #21: a child of a dead process that once
-// held PID 21, which Windows still lists under that parent.
-const LIVE = ['4 0 ', '21 4 1700000000021', '22 21 1700000000500', '23 21 1600000000000', '11 1 1700000000011'].join('\r\n')
+// The Windows live listing (`pid ppid workingSetBytes createdMs`) as the click and the kill path read
+// it: node #21 as sampled (300 MB), its child #22 (100 MB), and #23, older than #21: a child of a dead
+// process that once held PID 21, which Windows still lists under that parent.
+const MB = 1048576
+const LIVE = [
+  `4 0 ${MB} `, `21 4 ${300 * MB} 1700000000021`, `22 21 ${100 * MB} 1700000000500`, `23 21 ${900 * MB} 1600000000000`, `11 1 ${MB} 1700000000011`,
+].join('\r\n')
 
-function world(on: On, files: Map<string, string>, runs: string[][], live: { text: string } = { text: LIVE }) {
+function world(on: On, files: Map<string, string>, runs: string[][], live: { text: string; hold?: (argv: string[]) => Promise<string> | null } = { text: LIVE }) {
   mock.store(on, {})
   on('env.get', ($, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : e.name === 'USERPROFILE' ? 'C:\\Users\\u' : undefined }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -57,8 +60,10 @@ function world(on: On, files: Map<string, string>, runs: string[][], live: { tex
     return { value: text }
   })
   on('fs.write', ($, e) => { files.set(e.path, e.text); return { value: undefined } })
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     runs.push([...e.argv])
+    const held = live.hold?.([...e.argv])
+    if (held) return { value: { exitCode: 0, stdout: await held, stderr: '' } }
     return { value: { exitCode: 0, stdout: e.argv.some(a => a.includes('Win32_Process')) ? live.text : '', stderr: '' } }
   })
   on('ui.log', () => ({ value: undefined }))
@@ -158,9 +163,9 @@ describe('process trees', () => {
   })
 
   test('the Windows tree skips children older than their parent and unknown creation dates', async () => {
-    const procs = parseWinProcs(LIVE + '\r\n24 22 \r\n25 22 1700000000600\r\nnot a line')
-    expect(procs.find(p => p.pid === 4)).toEqual({ pid: 4, ppid: 0 })
-    expect(procs.find(p => p.pid === 21)).toEqual({ pid: 21, ppid: 4, started: '1700000000021' })
+    const procs = parseWinProcs(LIVE + `\r\n24 22 ${MB} \r\n25 22 ${MB} 1700000000600\r\nnot a line`)
+    expect(procs.find(p => p.pid === 4)).toEqual({ pid: 4, ppid: 0, memMB: 1 })
+    expect(procs.find(p => p.pid === 21)).toEqual({ pid: 21, ppid: 4, memMB: 300, started: '1700000000021' })
     expect(winTree(procs, 21)).toEqual([25, 22])
   })
 })
@@ -399,26 +404,115 @@ describe('the mod', () => {
   test('a kill is refused when the PID and name match but the process started at another time', async ($, on) => {
     const live = { text: LIVE }
     const { pane, runs } = await confirmOrphanKill($, on, live)
-    live.text = LIVE.replace('21 4 1700000000021', '21 4 1700000009999')
+    live.text = LIVE.replace(' 1700000000021', ' 1700000009999')
     await pane.press({ key: 'kill-yes' })
     expect(runs.some(a => a[0] === 'taskkill.exe')).toBe(false)
     expect(runs.find(a => a[0] === 'toast')?.[1]).toMatch(/node #21: this process cannot be ended from here/)
   })
 
-  test('a kill is refused when the PID is gone from the live listing', async ($, on) => {
+  test('the confirmation closes at once when the PID is already gone from the live listing', async ($, on) => {
     const { pane, runs } = await confirmOrphanKill($, on, { text: LIVE.replace(/^21 4 .*$/m, '') })
-    await pane.press({ key: 'kill-yes' })
+    expect(await pane.find({ type: 'Text', text: /End node #21\?/ })).toBe(undefined)
+    expect(await pane.find({ type: 'Button', key: 'kill-yes' } as never)).toBe(undefined)
     expect(runs.some(a => a[0] === 'taskkill.exe')).toBe(false)
     expect(runs.find(a => a[0] === 'toast')?.[1]).toMatch(/cannot be ended/)
   })
 
-  test('a kill is refused when the sampled row has no start time (a sampler older than 1.0.1)', async ($, on) => {
+  test('a row without a start time (a sampler older than 1.0.1, or a process just born) has no end button', async ($, on) => {
+    mock.clock(on, { now: NOW })
     const snap = snapshot()
     delete snap.orphans[0].top[0].started
-    const { pane, runs } = await confirmOrphanKill($, on, { text: LIVE }, snap)
+    world(on, new Map([[SNAP, JSON.stringify(snap)]]), [])
+    await $.session.start(session)
+    await $.command.run(run(''))
+    const pane = await $.ui.mount({ plugin: 'claude-load', surface: 'terminal', component: 'Pane', requestId: 'claude-load', props: paneProps })
+    await pane.press({ key: 'f-orphans' })
+    expect(await pane.find({ type: 'Text', text: /#21 node/ })).not.toBe(undefined)
+    expect(await pane.find({ type: 'Button', key: 'o0-k0' } as never)).toBe(undefined)
+  })
+
+  test('the confirmation shows the live tree and the toast what was freed', async ($, on) => {
+    const { pane, runs } = await confirmOrphanKill($, on, { text: LIVE })
+    // #21 and its child #22 (not #23, which predates it): 300 MB + 100 MB.
+    expect((await pane.find({ type: 'Text', text: /2 processes · 400 MB/ }))?.text).toMatch(/orphan webapp\/fix-x · 2 processes · 400 MB · together with its child processes/)
     await pane.press({ key: 'kill-yes' })
-    expect(runs.some(a => a[0] === 'taskkill.exe')).toBe(false)
-    expect(runs.find(a => a[0] === 'toast')?.[1]).toMatch(/cannot be ended/)
+    expect(runs.find(a => a[0] === 'toast')?.[1]).toBe('Ended node #21 (orphan webapp/fix-x) · about 400 MB freed')
+  })
+
+  // The click's live listing may answer after Yes: the kill path decides alone, the late preview is dropped.
+  test('a preview that answers after Yes neither refuses nor adds a toast', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const files = new Map<string, string>([[SNAP, JSON.stringify(snapshot())]])
+    const runs: string[][] = []
+    let release: (() => void) | null = null
+    let calls = 0
+    world(on, files, runs, {
+      text: LIVE,
+      hold: argv => argv.some(a => a.includes('Win32_Process')) && ++calls === 1
+        ? new Promise<string>(r => { release = () => r(LIVE.replace(/^21 4 .*$/m, '')) })
+        : null,
+    })
+    await $.session.start(session)
+    await $.command.run(run(''))
+    const pane = await $.ui.mount({ plugin: 'claude-load', surface: 'terminal', component: 'Pane', requestId: 'claude-load', props: paneProps })
+    await pane.press({ key: 'f-orphans' })
+    const pressing = pane.press({ key: 'o0-k0' })
+    await pressing
+    expect(release).not.toBe(null)
+    await pane.press({ key: 'kill-yes' })
+    release!()
+    await new Promise(r => setTimeout(r, 50))
+    const toasts = runs.filter(a => a[0] === 'toast').map(a => a[1])
+    expect(toasts).toEqual(['Ended node #21 (orphan webapp/fix-x) · about 400 MB freed'])
+  })
+
+  test('sorted by memory, the graphs show memory, with the CPU history as fallback when a sampler has none', async ($, on) => {
+    setLang('en')
+    const snap = snapshot()
+    snap.hist!.sessionsMem = { S1: [1000, 1200, 1500] }
+    const byMem = buildView(snap, 'S1', NOW, 'mem')
+    expect(byMem.graph).toBe('mem')
+    expect(byMem.active[0].hist).toEqual([1000, 1200, 1500])
+    expect(byMem.idle[0].hist).toEqual([264]) // no memory history for S2: its memory now
+    expect(byMem.orphans[0].hist).toEqual([400])
+    expect(buildView(snap, 'S1', NOW, 'cpu').active[0].hist).toEqual([5, 20, 38])
+
+    mock.clock(on, { now: NOW })
+    world(on, new Map([[SNAP, JSON.stringify(snap)]]), [])
+    await $.session.start(session)
+    await $.command.run(run(''))
+    const pane = await $.ui.mount({ plugin: 'claude-load', surface: 'terminal', component: 'Pane', requestId: 'claude-load', props: paneProps })
+    expect(await pane.find({ type: 'Text', text: /graphs show CPU over/ })).not.toBe(undefined)
+    await pane.select({ key: 'sort', value: 'mem' })
+    expect(await pane.find({ type: 'Text', text: /graphs show memory over/ })).not.toBe(undefined)
+  })
+
+  test('outside processes expand to their heaviest PIDs', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const snap = snapshot()
+    snap.outside[0].top = [{ name: 'zen', pid: 501, cpu: 1, memMB: 2048, started: '1' }, { name: 'zen', pid: 502, cpu: 0.5, memMB: 900, started: '2' }]
+    world(on, new Map([[SNAP, JSON.stringify(snap)]]), [])
+    await $.session.start(session)
+    await $.command.run(run(''))
+    const pane = await $.ui.mount({ plugin: 'claude-load', surface: 'terminal', component: 'Pane', requestId: 'claude-load', props: paneProps })
+    expect(await pane.find({ type: 'Text', text: /#501 zen/ })).toBe(undefined)
+    // By CPU `claude` (Claude Desktop, 11%) comes first and has no top in the fixture: no toggle for it.
+    expect(await pane.find({ type: 'Button', key: 'x0-t' } as never)).toBe(undefined)
+    await pane.press({ key: 'x1-t' })
+    expect((await pane.find({ type: 'Text', text: /#501 zen/ }))?.text).toBe('#501 zen · 1% · 2.0 GB')
+    expect(await pane.find({ type: 'Text', text: /#502 zen/ })).not.toBe(undefined)
+  })
+
+  test('idle sessions are one line with their buttons; the triage button carries the Claude mark', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    world(on, new Map([[SNAP, JSON.stringify(snapshot())]]), [])
+    await $.session.start(session)
+    await $.command.run(run(''))
+    const pane = await $.ui.mount({ plugin: 'claude-load', surface: 'terminal', component: 'Pane', requestId: 'claude-load', props: paneProps })
+    expect(await pane.find({ type: 'Button', key: 'i0-t' } as never)).not.toBe(undefined)
+    expect(await pane.find({ type: 'Button', key: 'i0-open' } as never)).not.toBe(undefined)
+    expect(await pane.find({ type: 'Text', text: '✻' })).not.toBe(undefined)
+    expect(await pane.find({ type: 'Button', label: 'Sort it out with Claude' } as never)).not.toBe(undefined)
   })
 
   kitTest('Russian strings render in the pane when the option says so', { timeoutMs: 30000, options: { language: 'ru' } }, async ($, on) => {

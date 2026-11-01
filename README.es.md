@@ -78,7 +78,7 @@ Administrador de tareas muestra un muro de `node` y `claude`. claude-load repart
 | ⚠️ **Huérfanos** | procesos de desarrollo cuyo proceso padre terminó (un servidor vite, un servidor de lenguaje, una ejecución de Python que quedó atrás), situados en su repositorio o worktree según el directorio de trabajo y terminados con un clic tras una confirmación |
 | 🧩 **Todo lo demás** | otros procesos agrupados por nombre (`chrome ×31`), para que veas si el problema es realmente Claude |
 | 🔎 **Filtros y grupos** | Todos · Activos · Pesados · Huérfanos · Esta ventana; por sesión, por repositorio (con los worktrees integrados), por proceso; orden por CPU o por memoria |
-| ✨ **Resolver con Claude** | un botón: la skill incluida `sessions-triage` clasifica las sesiones inactivas y los huérfanos, pregunta una sola vez y archiva o termina solo lo que apruebes |
+| ✻ **Resolver con Claude** | un botón: la skill incluida `sessions-triage` clasifica las sesiones inactivas y los huérfanos, pregunta una sola vez y archiva o termina solo lo que apruebes |
 | 🚦 **Línea de carga** | sobre el prompt con carga alta (CPU ≥ 50 % o memoria ≥ 85 %), con los mayores consumidores |
 | 🌍 **8 idiomas** | English, Русский, Deutsch, Español, Français, Português, 中文, 日本語 |
 
@@ -98,7 +98,7 @@ En el panel:
   el mismo nombre. Los procesos `claude` de las propias sesiones y los PID que no están en
   la muestra actual no se pueden terminar desde aquí.
 - **abrir ↗** cambia a esa sesión en la aplicación de escritorio de Claude.
-- **✨ Resolver con Claude** pide a Claude, en la sesión actual, que haga el triaje de la
+- **✻ Resolver con Claude** pide a Claude, en la sesión actual, que haga el triaje de la
   carga. Archivar sesiones requiere las herramientas de sesión de la aplicación de
   escritorio; en una terminal, Claude te indica qué cerrar.
 

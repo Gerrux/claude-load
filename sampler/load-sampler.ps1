@@ -335,8 +335,8 @@ while ($true) {
   # Other processes fold by name: a dozen msedge processes make one row.
   $byName = @{}
   foreach ($r in $outside) {
-    if (-not $byName.ContainsKey($r.name)) { $byName[$r.name] = @{ name = $r.name; cpu = 0.0; mem = 0.0; count = 0 } }
-    $b = $byName[$r.name]; $b.cpu += $r.cpu; $b.mem += $r.mem; $b.count++
+    if (-not $byName.ContainsKey($r.name)) { $byName[$r.name] = @{ name = $r.name; cpu = 0.0; mem = 0.0; count = 0; rows = New-Object System.Collections.ArrayList } }
+    $b = $byName[$r.name]; $b.cpu += $r.cpu; $b.mem += $r.mem; $b.count++; [void]$b.rows.Add($r)
   }
 
   $memUsed = $computer.TotalPhysicalMemory - $computer.AvailablePhysicalMemory
@@ -344,21 +344,30 @@ while ($true) {
     Push-Hist 'm:cpu' ([math]::Min(100, $total))
     Push-Hist 'm:mem' ($memUsed / $computer.TotalPhysicalMemory * 100)
     $seen = @{ 'm:cpu' = 1; 'm:mem' = 1 }
-    foreach ($s in $sessions.Values) { $k = 's:' + $s.sessionId; Push-Hist $k $s.cpu; $seen[$k] = 1 }
-    foreach ($g in $orphans.Values) { $k = 'o:' + $g.label; Push-Hist $k $g.cpu; $seen[$k] = 1 }
+    # 's:' / 'o:' CPU %, 'sm:' / 'om:' memory MB (whole).
+    foreach ($s in $sessions.Values) {
+      $k = 's:' + $s.sessionId; Push-Hist $k $s.cpu; $seen[$k] = 1
+      $k = 'sm:' + $s.sessionId; Push-Hist $k ([math]::Round($s.mem / 1MB)); $seen[$k] = 1
+    }
+    foreach ($g in $orphans.Values) {
+      $k = 'o:' + $g.label; Push-Hist $k $g.cpu; $seen[$k] = 1
+      $k = 'om:' + $g.label; Push-Hist $k ([math]::Round($g.mem / 1MB)); $seen[$k] = 1
+    }
     foreach ($k in @($hist.Keys)) { if (-not $seen.ContainsKey($k)) { $hist.Remove($k) } }
   }
-  $histOut = [ordered]@{ cpu = @(); mem = @(); sessions = @{}; orphans = @{} }
+  $histOut = [ordered]@{ cpu = @(); mem = @(); sessions = @{}; orphans = @{}; sessionsMem = @{}; orphansMem = @{} }
   foreach ($k in $hist.Keys) {
     $vals = @($hist[$k].ToArray())
     if ($k -eq 'm:cpu') { $histOut.cpu = $vals }
     elseif ($k -eq 'm:mem') { $histOut.mem = $vals }
+    elseif ($k.StartsWith('sm:')) { $histOut.sessionsMem[$k.Substring(3)] = $vals }
+    elseif ($k.StartsWith('om:')) { $histOut.orphansMem[$k.Substring(3)] = $vals }
     elseif ($k.StartsWith('s:')) { $histOut.sessions[$k.Substring(2)] = $vals }
     elseif ($k.StartsWith('o:')) { $histOut.orphans[$k.Substring(2)] = $vals }
   }
 
   $snapshot = [ordered]@{
-    v = 2  # the snapshot format (hooks/types.ts); 2 adds `started` to top rows
+    v = 3  # the snapshot format (hooks/types.ts); 2 adds `started` to top rows, 3 adds outside `top` and memory history
     ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     intervalMs = $IntervalMs
     cores = $cores
@@ -377,7 +386,7 @@ while ($true) {
       [ordered]@{ label = $_.label; root = $_.root; cpu = (Round1 $_.cpu); memMB = [int]($_.mem / 1MB); procs = $_.procs; top = @(Get-OrphanTop $_) }
     })
     outside = @($byName.Values | Sort-Object { $_.cpu * 1e6 + $_.mem / 1MB } -Descending | Select-Object -First 6 | ForEach-Object {
-      [ordered]@{ name = $_.name; count = $_.count; cpu = (Round1 $_.cpu); memMB = [int]($_.mem / 1MB) }
+      [ordered]@{ name = $_.name; count = $_.count; cpu = (Round1 $_.cpu); memMB = [int]($_.mem / 1MB); top = @(Format-Top $_.rows 3) }
     })
   }
   $json = $snapshot | ConvertTo-Json -Depth 6 -Compress

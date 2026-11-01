@@ -59,7 +59,7 @@ export function psArgv(platform: 'darwin' | 'linux', withStart = true): string[]
 export const PS_ENV = { LC_ALL: '', LC_TIME: 'C', TZ: 'UTC' }
 
 /** The snapshot format these samplers write (Snapshot.v). */
-export const SNAP_V = 2
+export const SNAP_V = 3
 
 /** Output of psArgv's ps, with or without `lstart`. Malformed lines are skipped. */
 export function parsePs(text: string, withStart = true): PsRow[] {
@@ -341,21 +341,33 @@ export function buildSnapshot(
   orphanRows.sort((a, b) => b.cpu - a.cpu || nameCmp(a.load.label, b.load.label))
   for (const r of orphanRows) r.load.cpu = round1(r.cpu)
 
-  const outsideOut: OutsideLoad[] = topFolded(fold(outside), 6)
+  // The heaviest three of each folded name, shown only (never endable from here).
+  const outsideOut: OutsideLoad[] = topFolded(fold(outside), 6).map(g => ({ ...g, top: topOf(outside.filter(p => p.name === g.name), 3) }))
   const machineCpu = Math.min(100, total)
 
   if (warm) {
     const seen = new Set(['m:cpu', 'm:mem'])
     pushHist(memory.hist, 'm:cpu', machineCpu)
     pushHist(memory.hist, 'm:mem', mem.totalMB > 0 ? mem.usedMB / mem.totalMB * 100 : 0)
-    for (const r of sessionRows) { const k = 's:' + r.s.sessionId; pushHist(memory.hist, k, r.cpu); seen.add(k) }
-    for (const r of orphanRows) { const k = 'o:' + r.load.label; pushHist(memory.hist, k, r.cpu); seen.add(k) }
+    // 's:' / 'o:' CPU %, 'sm:' / 'om:' memory MB; no prefix is the start of another.
+    for (const r of sessionRows) {
+      const id = r.s.sessionId
+      pushHist(memory.hist, 's:' + id, r.cpu); pushHist(memory.hist, 'sm:' + id, r.load.memMB)
+      seen.add('s:' + id); seen.add('sm:' + id)
+    }
+    for (const r of orphanRows) {
+      const l = r.load.label
+      pushHist(memory.hist, 'o:' + l, r.cpu); pushHist(memory.hist, 'om:' + l, r.load.memMB)
+      seen.add('o:' + l); seen.add('om:' + l)
+    }
     for (const k of [...memory.hist.keys()]) if (!seen.has(k)) memory.hist.delete(k)
   }
-  const hist: NonNullable<Snapshot['hist']> = { cpu: [], mem: [], sessions: {}, orphans: {} }
+  const hist: NonNullable<Snapshot['hist']> = { cpu: [], mem: [], sessions: {}, orphans: {}, sessionsMem: {}, orphansMem: {} }
   for (const [k, v] of memory.hist) {
     if (k === 'm:cpu') hist.cpu = [...v]
     else if (k === 'm:mem') hist.mem = [...v]
+    else if (k.startsWith('sm:')) hist.sessionsMem![k.slice(3)] = [...v]
+    else if (k.startsWith('om:')) hist.orphansMem![k.slice(3)] = [...v]
     else if (k.startsWith('s:')) hist.sessions[k.slice(2)] = [...v]
     else if (k.startsWith('o:')) hist.orphans[k.slice(2)] = [...v]
   }

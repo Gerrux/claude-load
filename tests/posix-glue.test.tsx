@@ -138,7 +138,12 @@ describe('macOS/Linux glue', () => {
     expect(snap.orphans[0].top[0]).toMatchObject({ name: 'python3', pid: 2000, started: 'Mon Nov 2 09:00:00 2026' })
     expect(st.envs.length).toBe(2)
     expect(st.envs.every(env => env?.LC_TIME === 'C' && env?.LC_ALL === '' && env?.TZ === 'UTC')).toBe(true)
-    expect(snap.v).toBe(2)
+    expect(snap.v).toBe(3)
+    expect(snap.outside.find(x => x.name === 'firefox')!.top).toEqual([
+      expect.objectContaining({ name: 'firefox', pid: 3000, started: 'Mon Nov 2 07:00:00 2026' }),
+    ])
+    expect(Object.keys(snap.hist!.sessionsMem!)).toEqual(Object.keys(snap.hist!.sessions))
+    expect(Object.keys(snap.hist!.orphansMem!)).toEqual(Object.keys(snap.hist!.orphans))
   })
 
   test('a leader on an older mod loses the lease to this session', async ($, on) => {
@@ -192,10 +197,9 @@ describe('macOS/Linux glue', () => {
     await $.command.run(run)
     const pane = await $.ui.mount({ plugin: 'claude-load', surface: 'terminal', component: 'Pane', requestId: 'claude-load', props: paneProps })
     await pane.press({ key: 'f-orphans' })
-    await pane.press({ key: 'o0-k0' })
-    await pane.press({ key: 'kill-yes' })
+    expect(await pane.find({ type: 'Text', text: /#2000 python3/ })).not.toBe(undefined)
+    expect(await pane.find({ type: 'Button', key: 'o0-k0' } as never)).toBe(undefined)
     expect(runs.some(a => a[0] === 'kill')).toBe(false)
-    expect(runs.find(a => a[0] === 'toast')?.[1]).toMatch(/python3 #2000: this process cannot be ended from here/)
   })
 
   test('the shell a session runs in is never an orphan', async () => {

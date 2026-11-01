@@ -1,6 +1,6 @@
 {
   "name": "claude-load",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "See which Claude Code session eats your CPU and memory: per-session load, orphaned dev processes and everything else, with graphs, filters and one-click cleanup. Windows, macOS, Linux; 8 languages.",
   "author": {
     "name": "Gerrux",

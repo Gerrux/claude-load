@@ -75,7 +75,7 @@ claude plugin marketplace add Gerrux/claude-load && claude plugin install claude
 | ⚠️ **孤儿进程** | 父进程已退出的开发进程（遗留的 vite 服务器、语言服务器、Python 运行），按工作目录归入所属的仓库或 worktree，确认后一键结束 |
 | 🧩 **其他一切** | 其他进程按名称折叠（`chrome ×31`），让你看清问题究竟是不是出在 Claude 上 |
 | 🔎 **筛选与分组** | 全部 · 活跃 · 高负载 · 孤儿进程 · 当前窗口；按会话、按仓库（worktree 折叠在内）、按进程；按 CPU 或内存排序 |
-| ✨ **让 Claude 来整理** | 一个按钮：内置的 `sessions-triage` skill 会对空闲会话和孤儿进程分类，只问一次，仅归档或结束你批准的项目 |
+| ✻ **让 Claude 来整理** | 一个按钮：内置的 `sessions-triage` skill 会对空闲会话和孤儿进程分类，只问一次，仅归档或结束你批准的项目 |
 | 🚦 **负载行** | 高负载时（CPU ≥ 50% 或内存 ≥ 85%）显示在输入框上方，并列出占用最高的进程 |
 | 🌍 **8 种语言** | English, Русский, Deutsch, Español, Français, Português, 中文, 日本語 |
 
@@ -94,7 +94,7 @@ claude plugin marketplace add Gerrux/claude-load && claude plugin install claude
   结束前会先对照同名进程的最新采样再次校验该 PID。会话自身的 `claude` 进程以及不在当前采样中的 PID
   无法在此结束。
 - **打开 ↗** 在 Claude 桌面应用中切换到该会话。
-- **✨ 让 Claude 来整理** 请当前会话中的 Claude 整理负载。
+- **✻ 让 Claude 来整理** 请当前会话中的 Claude 整理负载。
   归档会话需要桌面应用的会话工具；在终端中，Claude 会告诉你应该关闭哪些会话。
 
 筛选、分组和排序方式会在会话之间保留。
