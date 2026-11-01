@@ -156,7 +156,7 @@ describe('buildSnapshot', () => {
     expect(first.sessions.length).toBe(1)
     expect(first.sessions[0].cpu).toBe(0)
     expect(first.sessions[0].procs).toBe(4)
-    expect(first.hist).toEqual({ cpu: [], mem: [], sessions: {}, orphans: {} })
+    expect(first.hist).toEqual({ cpu: [], mem: [], sessions: {}, orphans: {}, sessionsMem: {}, orphansMem: {} })
     expect(memory.prevAt).toBe(T1)
     expect(memory.prevCpu.get(101)).toBe(100)
 
@@ -194,14 +194,21 @@ describe('buildSnapshot', () => {
     ])
 
     // Outside: both chromes folded, system-dir python and the sampler (node) stay outside, small python too.
-    expect(snap.outside).toEqual([
+    expect(snap.outside.map(({ top, ...o }) => o)).toEqual([
       { name: 'chrome', count: 2, cpu: 10, memMB: 1500 },
       { name: 'python', count: 2, cpu: 0, memMB: 170 },
       { name: 'node', count: 1, cpu: 0, memMB: 200 },
       { name: 'launchd', count: 1, cpu: 0, memMB: 10 },
     ].sort((a, b) => b.cpu * 1e6 + b.memMB - (a.cpu * 1e6 + a.memMB)))
 
-    expect(snap.hist).toEqual({ cpu: [55], mem: [50], sessions: { S1: [40] }, orphans: { 'repo/fix-a': [5] } })
+    expect(snap.outside.find(o => o.name === 'chrome')!.top).toEqual([
+      { name: 'chrome', pid: 300, cpu: 10, memMB: 800 },
+      { name: 'chrome', pid: 301, cpu: 0, memMB: 700 },
+    ])
+    expect(snap.hist).toEqual({
+      cpu: [55], mem: [50], sessions: { S1: [40] }, orphans: { 'repo/fix-a': [5] },
+      sessionsMem: { S1: [1100] }, orphansMem: { 'repo/fix-a': [200] },
+    })
     expect(memory.prevAt).toBe(T1 + 4000)
     expect(memory.prevCpu.get(101)).toBe(104)
   })
@@ -217,6 +224,9 @@ describe('buildSnapshot', () => {
     expect(third.hist!.mem.length).toBe(2)
     expect(third.hist!.sessions.S1.length).toBe(2)
     expect(third.hist!.orphans).toEqual({})
+    expect(third.hist!.sessionsMem).toEqual({ S1: [1100, 1100] })
+    expect(third.hist!.orphansMem).toEqual({})
+    expect([...memory.hist.keys()].sort()).toEqual(['m:cpu', 'm:mem', 's:S1', 'sm:S1'])
 
     // The result must not alias the live memory arrays.
     third.hist!.cpu.push(999)
@@ -226,6 +236,28 @@ describe('buildSnapshot', () => {
     for (let i = 0; i < 100; i++) snap = buildSnapshot({ ...input(2, false), now: T1 + 12000 + i * 4000 }, memory)
     expect(snap.hist!.cpu.length).toBe(90)
     expect(snap.hist!.sessions.S1.length).toBe(90)
+    expect(snap.hist!.sessionsMem!.S1.length).toBe(90)
+  })
+
+  test('outside top: the heaviest three of each folded name, heaviest first, start time carried', async () => {
+    const at = (s: number) => `Mon Nov  2 10:00:${String(s).padStart(2, '0')} 2026`
+    const rs: PsRow[] = [
+      { pid: 1, ppid: 0, cpuSec: 5, rssKB: 10 * MB, name: 'launchd', started: at(0) },
+      { pid: 600, ppid: 1, cpuSec: 1, rssKB: 100 * MB, name: 'chrome', started: at(1) },
+      { pid: 601, ppid: 1, cpuSec: 1, rssKB: 400 * MB, name: 'chrome', started: at(2) },
+      { pid: 602, ppid: 1, cpuSec: 1, rssKB: 300 * MB, name: 'chrome' }, // ps without lstart for it
+      { pid: 603, ppid: 1, cpuSec: 1, rssKB: 200 * MB, name: 'chrome', started: at(4) },
+      { pid: 604, ppid: 1, cpuSec: 1, rssKB: 50 * MB, name: 'chrome', started: at(5) },
+    ]
+    const snap = buildSnapshot({ now: T1, intervalMs: 4000, cores: 4, mem, rows: rs, sessions: [], cwdOf: new Map() }, freshMemory())
+    const chrome = snap.outside.find(o => o.name === 'chrome')!
+    expect(chrome).toMatchObject({ count: 5, memMB: 1050 }) // totals stay the whole fold
+    expect(chrome.top).toEqual([
+      { name: 'chrome', pid: 601, cpu: 0, memMB: 400, started: at(2) },
+      { name: 'chrome', pid: 602, cpu: 0, memMB: 300 },
+      { name: 'chrome', pid: 603, cpu: 0, memMB: 200, started: at(4) },
+    ])
+    expect(snap.outside.find(o => o.name === 'launchd')!.top!.length).toBe(1)
   })
 
   test('orphan tree reparented to PID 1: one group, the root first in top', async () => {
@@ -303,7 +335,7 @@ describe('buildSnapshot', () => {
     expect(snap.orphans[0]).toMatchObject({ label: 'proj', procs: 5, memMB: 595 })
     // Both roots first (heavier tree first), then the heaviest other member.
     expect(snap.orphans[0].top.map(t => t.pid)).toEqual([900, 910, 901])
-    expect(snap.hist).toEqual({ cpu: [], mem: [], sessions: {}, orphans: {} })
+    expect(snap.hist).toEqual({ cpu: [], mem: [], sessions: {}, orphans: {}, sessionsMem: {}, orphansMem: {} })
   })
 
   test('an owner chain is memoized and a ppid cycle does not hang', async () => {

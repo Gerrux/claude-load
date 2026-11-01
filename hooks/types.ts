@@ -30,11 +30,17 @@ export type SessionLoad = {
 /** A process whose parent died, attributed to a repository or worktree by its working directory. */
 export type OrphanLoad = { label: string; root: string; cpu: number; memMB: number; procs: number; top: Top[] }
 
-/** Processes outside every session, folded by name. */
-export type OutsideLoad = { name: string; count: number; cpu: number; memMB: number }
+/** Processes outside every session, folded by name; `top`: the heaviest three (shown, never endable). */
+export type OutsideLoad = { name: string; count: number; cpu: number; memMB: number; top?: Top[] }
 
-/** Recent points for the graphs, one per sample, oldest first. */
-export type History = { cpu: number[]; mem: number[]; sessions: Record<string, number[]>; orphans: Record<string, number[]> }
+/**
+ * Recent points for the graphs, one per sample, oldest first: `cpu` and `mem` (% of the machine),
+ * per session id and per orphan label CPU %, and in `sessionsMem` / `orphansMem` memory in MB.
+ */
+export type History = {
+  cpu: number[]; mem: number[]; sessions: Record<string, number[]>; orphans: Record<string, number[]>
+  sessionsMem?: Record<string, number[]>; orphansMem?: Record<string, number[]>
+}
 
 export type Snapshot = {
   /** The format: absent (1.0.0), 2 with `Top.started`. A mod replaces a sampler that writes an older one. */

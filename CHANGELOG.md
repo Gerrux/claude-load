@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1.0
+
+A tidier pane and more of what is behind each number.
+
+- On a wide pane the rows stop at 120 columns, so the CPU and memory stay next to the names;
+  the header graphs use the width. Long names are cut to the room left instead of a fixed
+  length.
+- An idle session is one line, its buttons before the memory.
+- The end confirmation shows what goes with the process, from a live listing at the click:
+  the number of processes in its tree and their memory. The toast after it says about how
+  much memory was freed. A PID already passed to another process closes the confirmation.
+- Processes outside sessions expand to their three heaviest PIDs (shown, never endable).
+- Sorted by memory, the session and orphan graphs show memory instead of CPU.
+- The end button shows only on rows with a start time, the ones it can check.
+- "Sort it out with Claude" carries Claude's ✻ mark in its color.
+- Snapshot format 3 (outside top rows, memory history); a 1.1.0 session replaces an older
+  sampler as 1.0.1 does.
+
 ## 1.0.1
 
 Ending a process checks that it is still the process you chose.

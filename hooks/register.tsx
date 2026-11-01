@@ -22,6 +22,10 @@ const RESPAWN_MS = 30000
 const LEADER_STALE_MS = 15000
 const MIN_SAMPLE_MS = POLL_MS - 1000
 const PANE = 'claude-load'
+/** The pane's rows stop at this width: on a wide pane the numbers stay next to the names. */
+const PANE_MAX = 120
+/** A memory graph is scaled to at least this, so a small session's few MB do not read as spikes. */
+const MEM_FLOOR_MB = 256
 const KEY_BAND = 'band'
 const KEY_VIEW = 'view'
 const TEXT_IDLE_ROWS = 5
@@ -159,6 +163,8 @@ export type RepoRow = { label: string; root: string; cpu: number; memMB: number;
 export type ProcRow = { name: string; count: number; cpu: number; memMB: number; where: string[] }
 export type View = {
   cpu: number; memUsedMB: number; memTotalMB: number; memFrac: number; cores: number; ageS: number
+  /** What the session and orphan graphs (`Row.hist`, `OrphanRow.hist`) show. */
+  graph: Sort
   claude: { count: number; cpu: number; memMB: number }
   active: Row[]; idle: Row[]; orphans: OrphanRow[]; outside: OutsideLoad[]
   hist: { cpu: number[]; mem: number[] }
@@ -188,12 +194,14 @@ function sumHist(list: number[][]): number[] {
   return out
 }
 
+/** The graphs follow the sort: CPU % by CPU, memory in MB by memory. */
 export function buildView(snap: Snapshot, selfId: string | null, now: number, sort: Sort = 'cpu'): View {
+  const mem = sort === 'mem'
   const rows: Row[] = snap.sessions.map(s => ({
     id: s.sessionId, name: s.name || tr().untitled, status: s.status, isSelf: s.sessionId === selfId,
     cpu: s.cpu, memMB: s.memMB, procs: s.procs, detail: detailOf(s.top),
-    hist: snap.hist?.sessions[s.sessionId] ?? [s.cpu], link: sessionLink(s.hostSessionId),
-    procsList: s.top, byName: s.byName ?? [],
+    hist: (mem ? snap.hist?.sessionsMem?.[s.sessionId] : snap.hist?.sessions[s.sessionId]) ?? [mem ? s.memMB : s.cpu],
+    link: sessionLink(s.hostSessionId), procsList: s.top, byName: s.byName ?? [],
   }))
   const by = sort === 'mem' ? (a: Row, b: Row) => b.memMB - a.memMB || b.cpu - a.cpu : (a: Row, b: Row) => b.cpu - a.cpu || b.memMB - a.memMB
   const isActive = (r: Row) => r.status === 'busy' || r.cpu >= 1
@@ -202,11 +210,11 @@ export function buildView(snap: Snapshot, selfId: string | null, now: number, so
   const orphans = snap.orphans.map(o => ({
     label: o.label, cpu: o.cpu, memMB: o.memMB, procs: o.procs,
     detail: o.top.map(t => `${t.name}#${t.pid}`).join(', '), owners: orphanOwners(snap, o),
-    hist: snap.hist?.orphans[o.label] ?? [o.cpu], top: o.top,
+    hist: (mem ? snap.hist?.orphansMem?.[o.label] : snap.hist?.orphans[o.label]) ?? [mem ? o.memMB : o.cpu], top: o.top,
   })).sort((a, b) => sort === 'mem' ? b.memMB - a.memMB : b.cpu - a.cpu)
   return {
     cpu: snap.cpu, memUsedMB: snap.memUsedMB, memTotalMB: snap.memTotalMB, memFrac: snap.memUsedMB / snap.memTotalMB,
-    cores: snap.cores, ageS: Math.max(0, Math.round((now - snap.ts) / 1000)),
+    cores: snap.cores, ageS: Math.max(0, Math.round((now - snap.ts) / 1000)), graph: sort,
     claude: { count: rows.length, cpu: rows.reduce((a, r) => a + r.cpu, 0), memMB: rows.reduce((a, r) => a + r.memMB, 0) },
     active, idle, orphans,
     outside: [...snap.outside].sort((a, b) => sort === 'mem' ? b.memMB - a.memMB : b.cpu - a.cpu).slice(0, 6),
@@ -325,8 +333,11 @@ export function textReport(v: View): string {
 
 // --- state, polling, actions -------------------------------------------
 
-/** `started`: the start time of the row the user chose, the baseline the live process must match. */
-type Confirm = { pid: number; name: string; where: string; started?: string }
+/**
+ * `started`: the start time of the row the user chose, the baseline the live process must match.
+ * `preview`: what ending would take, from a live listing at the click (previewKill).
+ */
+type Confirm = { pid: number; name: string; where: string; started?: string; preview?: { procs: number; memMB: number } }
 type State = {
   snap: Snapshot | null
   selfId: string | null
@@ -576,19 +587,25 @@ export function sameProcess(chosen: string | undefined, live: string | undefined
   return norm(chosen) !== '' && norm(chosen) === norm(live)
 }
 
-/** Windows, right before ending: every process as `pid ppid createdMs`, createdMs computed as the sampler does. */
+/**
+ * Windows, at the click and right before ending: every process as `pid ppid workingSetBytes createdMs`,
+ * createdMs computed as the sampler does and last, as CIM may give no creation date.
+ */
 const WIN_PROCS =
-  'Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate | ForEach-Object { ' +
-  "'{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }) }"
+  'Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, WorkingSetSize, CreationDate | ForEach-Object { ' +
+  "'{0} {1} {2} {3}' -f $_.ProcessId, $_.ParentProcessId, $_.WorkingSetSize, $(if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }) }"
 
-export type WinProc = { pid: number; ppid: number; started?: string }
+export type WinProc = { pid: number; ppid: number; memMB: number; started?: string }
 
 /** Output of WIN_PROCS; createdMs is empty for the processes CIM gives no creation date. */
 export function parseWinProcs(text: string): WinProc[] {
   const out: WinProc[] = []
   for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*(\d+)\s+(\d+)(?:\s+(\d+))?\s*$/.exec(line)
-    if (m) out.push(m[3] ? { pid: Number(m[1]), ppid: Number(m[2]), started: m[3] } : { pid: Number(m[1]), ppid: Number(m[2]) })
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)(?:\s+(\d+))?\s*$/.exec(line)
+    if (!m) continue
+    const p: WinProc = { pid: Number(m[1]), ppid: Number(m[2]), memMB: Number(m[3]) / 1048576 }
+    if (m[4]) p.started = m[4]
+    out.push(p)
   }
   return out
 }
@@ -606,6 +623,53 @@ export function winTree(procs: WinProc[], pid: number): number[] {
   }), pid)
 }
 
+/**
+ * The chosen process in a live listing: whether the PID still holds it (`same`), its tree, children
+ * first (Windows: winTree; macOS/Linux: by ppid), the tree's memory, and every PID's start time.
+ */
+type Live = { same: boolean; tree: number[]; memMB: number; born: Map<number, string | undefined> }
+
+async function liveTree($: EngineInterface, st: State, c: Confirm): Promise<Live> {
+  const run = (argv: string[], timeoutMs: number, env?: Record<string, string>) =>
+    $.process.run(argv, { timeoutMs, cwd: st.home || undefined, ...(env ? { env } : {}) })
+  const procs: Array<{ pid: number; started?: string; memMB: number }> = []
+  let tree: number[]
+  if (st.platform === 'win32') {
+    const win = parseWinProcs((await run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', WIN_PROCS], 30000)).stdout)
+    procs.push(...win)
+    tree = [...winTree(win, c.pid), c.pid]
+  } else {
+    const rows = parsePs((await run(psArgv(st.platform === 'darwin' ? 'darwin' : 'linux'), 10000, PS_ENV)).stdout)
+    procs.push(...rows.map(x => ({ pid: x.pid, started: x.started, memMB: x.rssKB / 1024 })))
+    tree = [...descendants(rows, c.pid), c.pid]
+  }
+  const byPid = new Map(procs.map(p => [p.pid, p]))
+  return {
+    same: sameProcess(c.started, byPid.get(c.pid)?.started),
+    tree,
+    memMB: tree.reduce((a, pid) => a + (byPid.get(pid)?.memMB ?? 0), 0),
+    born: new Map(procs.map(p => [p.pid, p.started])),
+  }
+}
+
+/** At the click: what ending would take, for the confirmation; a PID already passed on closes it. */
+async function previewKill($: EngineInterface, st: State, c: Confirm) {
+  let live: Live
+  try {
+    live = await liveTree($, st, c)
+  } catch {
+    return // the confirmation stays without the figures; the kill path queries again
+  }
+  if (st.confirm !== c) return // answered, or another row chosen meanwhile
+  if (!live.same) {
+    st.confirm = null
+    $.ui.toast(tr().cannotKill(c.name, c.pid))
+  } else {
+    c.preview = { procs: live.tree.length, memMB: Math.round(live.memMB) }
+  }
+  $.ui.invalidate('ui.render')
+}
+
 async function killProcess($: EngineInterface, st: State, c: Confirm) {
   st.confirm = null
   const t = tr()
@@ -619,34 +683,32 @@ async function killProcess($: EngineInterface, st: State, c: Confirm) {
   if (!st.snap || now - st.snap.ts > STALE_MS || !canKill(st.snap, c.pid, c.name)) return refuse()
   // A sample may be 15 s old, long enough for the PID to pass to a new process of the same name: right
   // before ending, the live process under the PID must have the start time of the row the user chose.
-  const run = (argv: string[], timeoutMs: number, env?: Record<string, string>) =>
-    $.process.run(argv, { timeoutMs, cwd: st.home || undefined, ...(env ? { env } : {}) })
+  const run = (argv: string[], timeoutMs: number) => $.process.run(argv, { timeoutMs, cwd: st.home || undefined })
   let r: { exitCode: number; stdout: string; stderr: string }
+  let live: Live | null = null
   try {
+    live = await liveTree($, st, c)
+    if (!live.same) return refuse()
+    const { tree, born } = live
     if (st.platform === 'win32') {
-      const procs = parseWinProcs((await run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', WIN_PROCS], 30000)).stdout)
-      if (!sameProcess(c.started, procs.find(p => p.pid === c.pid)?.started)) return refuse()
       // The tree by explicit PIDs, children first, not by taskkill /T: see winTree.
-      r = await run(['taskkill.exe', '/F', ...[...winTree(procs, c.pid), c.pid].flatMap(p => ['/PID', String(p)])], 15000)
+      r = await run(['taskkill.exe', '/F', ...tree.flatMap(p => ['/PID', String(p)])], 15000)
     } else {
-      const listing = async () => parsePs((await run(psArgv(st.platform === 'darwin' ? 'darwin' : 'linux'), 10000, PS_ENV)).stdout)
-      const rows = await listing()
-      if (!sameProcess(c.started, rows.find(x => x.pid === c.pid)?.started)) return refuse()
-      // The whole tree, as on Windows: descendants from this listing, then the process itself.
-      const tree = [...descendants(rows, c.pid), c.pid]
       r = await run(['kill', '-TERM', ...tree.map(String)], 5000)
       if (r.exitCode === 0) {
         await $.clock.sleep(3000)
         // SIGKILL only what is still the same process: a PID freed by SIGTERM may be reused within 3 s.
-        const born = new Map(rows.map(x => [x.pid, x.started]))
-        const left = (await listing()).filter(x => tree.includes(x.pid) && sameProcess(born.get(x.pid), x.started)).map(x => String(x.pid))
+        const again = parsePs((await $.process.run(psArgv(st.platform === 'darwin' ? 'darwin' : 'linux'), { timeoutMs: 10000, cwd: st.home || undefined, env: PS_ENV })).stdout)
+        const left = again.filter(x => tree.includes(x.pid) && sameProcess(born.get(x.pid), x.started)).map(x => String(x.pid))
         if (left.length) r = await run(['kill', '-KILL', ...left], 5000)
       }
     }
   } catch (err) {
     r = { exitCode: 1, stdout: '', stderr: err instanceof Error ? err.message : String(err) }
   }
-  $.ui.toast(r.exitCode === 0 ? t.killed(c.name, c.pid, c.where) : t.killFailed(c.name, c.pid, (r.stderr || r.stdout).trim().slice(0, 120)))
+  $.ui.toast(r.exitCode === 0
+    ? `${t.killed(c.name, c.pid, c.where)}${live ? ' · ' + t.freed(fmtMem(Math.round(live.memMB))) : ''}`
+    : t.killFailed(c.name, c.pid, (r.stderr || r.stdout).trim().slice(0, 120)))
   await tick($, st)
   $.ui.invalidate('ui.render')
 }
@@ -767,18 +829,28 @@ export const register: Register = (on, options) => {
 
     const v = buildView(snap, st.selfId, await $.clock.now(), st.sort)
     const shown = applyFilter(v, st.filter)
-    const columns = Math.max(56, e.props.bodyColumns ?? 90)
+    // A wide pane keeps the numbers next to the names: the rows stop at PANE_MAX columns.
+    const columns = Math.min(PANE_MAX, Math.max(56, e.props.bodyColumns ?? 90))
     const nameMax = Math.max(18, columns - 24)
     const minutes = Math.max(1, Math.round(((snap.hist?.cpu.length ?? 1) * snap.intervalMs) / 60000))
+    const byMem = v.graph === 'mem'
 
     // --- primitives: SVG on the desktop, text in a terminal ---
     const icon = (kind: IconKind) => Svg
       ? <Box width={3}><Svg source={iconSvg(kind)} width={14} height={14} alt={kind} /></Box>
       : <Box width={2}><Text color={kind === 'busy' ? 'success' : kind === 'orphan' || kind === 'working' ? 'warning' : 'inactive'}>{ICON_TEXT[kind]}</Text></Box>
 
-    const spark = (vals: number[], tone: Tone, w: number, floor = 5) => Svg
-      ? <Svg source={sparkSvg(vals, w * 7, 14, HEX[tone], floor)} width={w * 7} height={14} alt={t.graphAlt(minutes)} />
+    const spark = (vals: number[], tone: Tone, w: number, floor = 5, alt = t.graphAlt(minutes)) => Svg
+      ? <Svg source={sparkSvg(vals, w * 7, 14, HEX[tone], floor)} width={w * 7} height={14} alt={alt} />
       : <Text color={tone === 'inactive' ? undefined : tone} dimColor={tone === 'inactive'}>{sparkText(vals, w, floor)}</Text>
+    // A session's or an orphan's graph: CPU, or memory in MB while sorted by memory.
+    const rowSpark = (hist: number[], cpu: number, mb: number) => byMem
+      ? spark(hist, memTone(Math.max(mb, ...hist.slice(-5))) ?? 'success', 12, MEM_FLOOR_MB, t.graphAltMem(minutes))
+      : spark(hist, cpuTone(Math.max(cpu, ...hist.slice(-5))), 12)
+    // A name that takes the room left and is cut at its end; `short` bounds it for a terminal.
+    const nameCell = (text: string, props: Record<string, unknown> = {}) => (
+      <Box flexGrow={1} flexShrink={1} minWidth={0}><Text wrap="truncate-end" {...props}>{short(text, nameMax)}</Text></Box>
+    )
 
     const meterBar = (frac: number, tone: Tone, w: number) => {
       if (Svg) return <Svg source={barSvg(frac, w * 7, 8, HEX[tone])} width={w * 7} height={8} alt={pct(frac * 100)} />
@@ -797,8 +869,9 @@ export const register: Register = (on, options) => {
     )
     const chip = (text: string) => <Text dimColor>  {text}</Text>
 
-    const killButton = (p: Top, where: string, key: string) => canKill(snap, p.pid) && (
-      <Button key={key} label={t.kill} plain dimColor onPress={() => { st.confirm = { pid: p.pid, name: p.name, where, started: p.started }; $.ui.invalidate('ui.render') }} />
+    // Only a row with a start time: the kill path compares it with the live process (killProcess).
+    const killButton = (p: Top, where: string, key: string) => canKill(snap, p.pid) && !!p.started && (
+      <Button key={key} label={t.kill} plain dimColor onPress={() => { const c: Confirm = { pid: p.pid, name: p.name, where, started: p.started }; st.confirm = c; $.ui.invalidate('ui.render'); void previewKill($, st, c) }} />
     )
 
     // --- rows ---
@@ -810,27 +883,26 @@ export const register: Register = (on, options) => {
       const openButton = r.link && !r.isSelf && (
         <Button key={`${key}-open`} label={t.open} plain dimColor onPress={() => { const l = r.link; if (l) void openSession($, st, l) }} />
       )
+      const toggleButton = <Button key={`${key}-t`} label={isOpen ? t.hideProcs : t.showProcs} plain dimColor onPress={toggle} />
+      // An idle row is one line, its buttons before the memory; an active one has a second line.
+      const oneLine = dim && !isOpen
       return (
         <Box key={key} flexDirection="column" marginTop={dim ? 0 : 1}>
-          <Box alignItems="center">
+          <Box alignItems="center" gap={oneLine ? 1 : 0}>
             {icon(kind)}
-            <Box flexGrow={1}>
-              <Text bold={!dim || r.isSelf} dimColor={dim && !r.isSelf} color={r.isSelf ? 'claude' : undefined}>{short(r.name, nameMax)}</Text>
-            </Box>
+            {nameCell(r.name, { bold: !dim || r.isSelf, dimColor: dim && !r.isSelf, color: r.isSelf ? 'claude' : undefined })}
+            {oneLine && toggleButton}
+            {oneLine && openButton}
             {!dim && cpuCell(r.cpu)}
             {memCell(r.memMB, dim)}
           </Box>
-          {(!dim || isOpen) && (
+          {!oneLine && (
             <Box paddingLeft={Svg ? 3 : 2} gap={1} alignItems="center">
-              {spark(r.hist, cpuTone(Math.max(r.cpu, ...r.hist.slice(-5))), 12)}
-              <Box flexGrow={1}><Text dimColor color={r.isSelf ? 'claude' : undefined}>{short(meta, Math.max(16, columns - 40))}</Text></Box>
-              <Button key={`${key}-t`} label={isOpen ? t.hideProcs : t.showProcs} plain dimColor onPress={toggle} />
-              {openButton}
-            </Box>
-          )}
-          {dim && !isOpen && (
-            <Box paddingLeft={Svg ? 3 : 2} gap={1}>
-              <Button key={`${key}-t`} label={t.showProcs} plain dimColor onPress={toggle} />
+              {rowSpark(r.hist, r.cpu, r.memMB)}
+              <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                <Text wrap="truncate-end" dimColor color={r.isSelf ? 'claude' : undefined}>{short(meta, Math.max(16, columns - 40))}</Text>
+              </Box>
+              {toggleButton}
               {openButton}
             </Box>
           )}
@@ -843,7 +915,7 @@ export const register: Register = (on, options) => {
                   {memCell(b.memMB, true)}
                 </Box>
               ))}
-              {r.procsList.filter(p => canKill(snap, p.pid) && (p.cpu >= 0.5 || p.memMB >= 200)).map((p, i) => (
+              {r.procsList.filter(p => canKill(snap, p.pid) && !!p.started && (p.cpu >= 0.5 || p.memMB >= 200)).map((p, i) => (
                 <Box key={`${key}-p${i}`} gap={1}>
                   <Text dimColor>#{p.pid} {p.name} · {pct(p.cpu)} · {fmtMem(p.memMB)}</Text>
                   {killButton(p, short(r.name, 24), `${key}-k${i}`)}
@@ -859,12 +931,12 @@ export const register: Register = (on, options) => {
       <Box key={key} flexDirection="column" marginTop={1}>
         <Box alignItems="center">
           {icon('orphan')}
-          <Box flexGrow={1}><Text bold>{short(o.label, nameMax)}</Text></Box>
+          {nameCell(o.label, { bold: true })}
           {cpuCell(o.cpu)}
           {memCell(o.memMB, false)}
         </Box>
         <Box paddingLeft={Svg ? 3 : 2} gap={1} flexWrap="wrap" alignItems="center">
-          {spark(o.hist, cpuTone(Math.max(o.cpu, ...o.hist.slice(-5))), 12)}
+          {rowSpark(o.hist, o.cpu, o.memMB)}
           {o.top.map((p, i) => (
             <Box key={`${key}-t${i}`} gap={1}>
               <Text dimColor>#{p.pid} {p.name}</Text>
@@ -891,7 +963,7 @@ export const register: Register = (on, options) => {
           <Box width={4}><Text bold>{label}</Text></Box>
           {meterBar(frac, tone, 14)}
           <Box width={16}><Text bold color={tone}>{value}</Text></Box>
-          <Box flexGrow={1}>{spark(vals, tone, Math.max(10, Math.min(30, columns - 42)), 100)}</Box>
+          <Box flexGrow={1}>{spark(vals, tone, Math.max(10, columns - 42), 100)}</Box>
         </Box>
       )
     }
@@ -924,7 +996,12 @@ export const register: Register = (on, options) => {
             : <Box gap={1}>{SORTS.map(s => <Button key={`s-${s}`} label={sortLabel(s)} variant={st.sort === s ? 'primary' : 'secondary'} onPress={() => { st.sort = s; void saveView($, st) }} />)}</Box>}
           <Box flexGrow={1} />
           <Button key="refresh" label="↻" plain dimColor onPress={() => { void tick($, st) }} />
-          <Button key="triage" label={t.triage} variant="primary" onPress={() => { void triage($) }} />
+          {/* The one button that hands the work to Claude, with its mark in its color. A Button takes a
+              string label only (engines before 2.1.309), so the mark and the frame sit around it. */}
+          <Box key="triage-box" alignItems="center" gap={1} {...(Svg ? { borderStyle: 'round', borderColor: 'claude', paddingX: 1 } : {})}>
+            <Text color="claude" bold>✻</Text>
+            <Button key="triage" label={t.triage} plain={Svg ? true : undefined} variant={Svg ? undefined : 'primary'} onPress={() => { void triage($) }} />
+          </Box>
         </Box>
       </Box>
     )
@@ -932,8 +1009,11 @@ export const register: Register = (on, options) => {
     const confirmBar = st.confirm && (
       <Box marginTop={1} borderStyle="round" borderColor="warning" paddingX={1} flexDirection="column">
         <Text color="warning" bold>{t.killTitle(st.confirm.name, st.confirm.pid)}</Text>
-        {/* Both platforms end the process with its descendants from a live listing (killProcess). */}
-        <Text dimColor>{st.confirm.where} · {t.killNote}</Text>
+        {/* Both platforms end the process with its descendants from a live listing (killProcess); the
+            count and memory come from the same listing taken at the click (previewKill), "…" until then. */}
+        <Text dimColor>
+          {[st.confirm.where, st.confirm.preview ? `${plural(lang, st.confirm.preview.procs, t.procs)} · ${fmtMem(st.confirm.preview.memMB)}` : '…', t.killNote].join(' · ')}
+        </Text>
         <Box gap={2} marginTop={1}>
           <Button key="kill-yes" label={t.killYes} variant="primary" onPress={() => { const c = st.confirm; if (c) void killProcess($, st, c) }} />
           <Button key="kill-no" label={t.killNo} variant="secondary" onPress={() => { st.confirm = null; $.ui.invalidate('ui.render') }} />
@@ -1001,20 +1081,36 @@ export const register: Register = (on, options) => {
 
     const outsideBlock = st.group !== 'procs' && shown.outside.length > 0 && [
       section(t.sectionOutside),
-      ...shown.outside.map((x, i) => (
-        <Box key={`x${i}`} alignItems="center">
-          {icon('proc')}
-          <Box flexGrow={1}><Text dimColor>{outsideName(x.name)}</Text>{chip(x.count > 1 ? `×${x.count}` : '')}</Box>
-          {cpuCell(x.cpu)}
-          {memCell(x.memMB, true)}
-        </Box>
-      )),
+      ...shown.outside.map((x, i) => {
+        // The heaviest processes of the name, to see what they are; never endable from here.
+        const id = `x:${x.name}`
+        const isOpen = st.expanded.has(id)
+        const toggle = () => { if (isOpen) st.expanded.delete(id); else st.expanded.add(id); $.ui.invalidate('ui.render') }
+        return (
+          <Box key={`x${i}`} flexDirection="column">
+            <Box alignItems="center" gap={1}>
+              {icon('proc')}
+              <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                <Text wrap="truncate-end" dimColor>{outsideName(x.name)}{x.count > 1 ? `  ×${x.count}` : ''}</Text>
+              </Box>
+              {x.top?.length ? <Button key={`x${i}-t`} label={isOpen ? t.hideProcs : t.showProcs} plain dimColor onPress={toggle} /> : null}
+              {cpuCell(x.cpu)}
+              {memCell(x.memMB, true)}
+            </Box>
+            {isOpen && x.top?.map((p, j) => (
+              <Box key={`x${i}-p${j}`} paddingLeft={Svg ? 5 : 4}>
+                <Text dimColor>#{p.pid} {p.name} · {pct(p.cpu)} · {fmtMem(p.memMB)}</Text>
+              </Box>
+            ))}
+          </Box>
+        )
+      }),
     ]
 
     const empty = st.group === 'sessions' && !shown.sessions.length && !shown.idle.length && !shown.orphans.length
 
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" width={columns}>
         {head}
         {controls}
         {confirmBar}
@@ -1022,7 +1118,7 @@ export const register: Register = (on, options) => {
         {empty && <Box marginTop={1}><Text dimColor>{t.empty}</Text></Box>}
         {outsideBlock}
         <Box marginTop={1}>
-          <Text dimColor>{t.footer(minutes)}</Text>
+          <Text dimColor>{byMem ? t.footerMem(minutes) : t.footer(minutes)}</Text>
         </Box>
       </Box>
     )

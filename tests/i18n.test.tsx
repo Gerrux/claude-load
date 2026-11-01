@@ -20,7 +20,7 @@ function snapshot(): Snapshot {
       { pid: 2, name: 'Docs', status: 'idle', cwd: 'C:\\repo\\api\\.claude\\worktrees\\docs', hostSessionId: 'local_bbbb-2', sessionId: 'S2', cpu: 0, memMB: 600, procs: 12, top: [], byName: [] },
       { pid: 3, name: 'Release', status: 'idle', cwd: 'C:\\repo\\web', hostSessionId: 'local_cccc-3', sessionId: 'S3', cpu: 0, memMB: 580, procs: 1, top: [], byName: [] },
     ],
-    orphans: [{ label: 'web/feat-x', root: 'C:\\repo\\web', cpu: 7, memMB: 1300, procs: 2, top: [{ name: 'node', pid: 21, cpu: 7, memMB: 1300 }] }],
+    orphans: [{ label: 'web/feat-x', root: 'C:\\repo\\web', cpu: 7, memMB: 1300, procs: 2, top: [{ name: 'node', pid: 21, cpu: 7, memMB: 1300, started: '1700000000021' }] }],
     outside: [{ name: 'chrome', count: 22, cpu: 5, memMB: 4100 }],
     hist: { cpu: [20, 50, 81], mem: [80, 85, 88], sessions: { S1: [10, 30, 41] }, orphans: { 'web/feat-x': [7, 7, 7] } },
   }
@@ -39,7 +39,12 @@ function world(on: On, files: Map<string, string>, runs: string[][]) {
     return { value: text }
   })
   on('fs.write', ($, e) => { files.set(e.path, e.text); return { value: undefined } })
-  on('process.run', ($, e) => { runs.push([...e.argv]); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    // The live listing the end button reads at the click: node #21 as sampled.
+    const live = e.argv.some(a => a.includes('Win32_Process')) ? `21 4 ${1300 * 1048576} 1700000000021` : ''
+    return { value: { exitCode: 0, stdout: live, stderr: '' } }
+  })
   on('ui.log', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('prompt.submit', ($, e) => ({ text: e.text }))
