@@ -1110,7 +1110,7 @@ export const register: Register = (on, options) => {
     const empty = st.group === 'sessions' && !shown.sessions.length && !shown.idle.length && !shown.orphans.length
 
     return (
-      <Box flexDirection="column" width={columns}>
+      <Box flexDirection="column" width={(e.props.bodyColumns ?? 0) > PANE_MAX ? PANE_MAX : undefined}>
         {head}
         {controls}
         {confirmBar}

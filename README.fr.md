@@ -78,7 +78,7 @@ répartit la charge **par session** :
 | ⚠️ **Orphelins** | processus de développement dont le parent a disparu (un serveur vite, un serveur de langage, une exécution Python restée en plan), rattachés à leur dépôt ou worktree d'après le répertoire de travail, et arrêtés en un clic après confirmation |
 | 🧩 **Tout le reste** | les autres processus regroupés par nom (`chrome ×31`), pour voir si le problème vient bien de Claude |
 | 🔎 **Filtres et groupes** | Tous · Actifs · Lourds · Orphelins · Cette fenêtre ; par session, par dépôt (worktrees inclus), par processus ; tri par CPU ou par mémoire |
-| ✨ **Faire le tri avec Claude** | un bouton : le skill `sessions-triage` fourni classe les sessions inactives et les orphelins, pose la question une seule fois, puis archive ou arrête uniquement ce que vous approuvez |
+| ✻ **Faire le tri avec Claude** | un bouton : le skill `sessions-triage` fourni classe les sessions inactives et les orphelins, pose la question une seule fois, puis archive ou arrête uniquement ce que vous approuvez |
 | 🚦 **Ligne de charge** | au-dessus de la saisie en cas de forte charge (CPU ≥ 50 % ou mémoire ≥ 85 %), avec les plus gros consommateurs |
 | 🌍 **8 langues** | English, Русский, Deutsch, Español, Français, Português, 中文, 日本語 |
 
@@ -98,7 +98,7 @@ Dans le panneau :
   nom. Les processus `claude` propres aux sessions et les PID absents de l'échantillon
   actuel ne peuvent pas être arrêtés d'ici.
 - **ouvrir ↗** bascule vers cette session dans l'application de bureau Claude.
-- **✨ Faire le tri avec Claude** demande à Claude, dans la session en cours, de faire le tri
+- **✻ Faire le tri avec Claude** demande à Claude, dans la session en cours, de faire le tri
   dans la charge. L'archivage des sessions nécessite les outils de session de l'application
   de bureau ; dans un terminal, Claude vous indique à la place quoi fermer.
 

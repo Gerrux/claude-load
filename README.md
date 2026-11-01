@@ -77,7 +77,7 @@ and test runners, and the machine crawls while Task Manager shows a wall of `nod
 | ⚠️ **Orphans** | dev processes whose parent died (a vite server, a language server, a Python run left behind), placed in their repository or worktree by working directory, ended with one click after a confirmation |
 | 🧩 **Everything else** | other processes folded by name (`chrome ×31`), so you see whether the problem is Claude at all |
 | 🔎 **Filters & groups** | all · active · heavy · orphans · this window; by session, by repository (worktrees folded in), by process name; sort by CPU or memory |
-| ✨ **Sort it out with Claude** | one button: the bundled `sessions-triage` skill classifies idle sessions and orphans, asks once, archives or ends only what you approve |
+| ✻ **Sort it out with Claude** | one button: the bundled `sessions-triage` skill classifies idle sessions and orphans, asks once, archives or ends only what you approve |
 | 🚦 **Load line** | above the prompt under high load (CPU ≥ 50% or memory ≥ 85%), with the top consumers |
 | 🌍 **8 languages** | English, Русский, Deutsch, Español, Français, Português, 中文, 日本語 |
 
@@ -99,7 +99,7 @@ In the pane:
   processes, the shells other sessions run in, and PIDs not in the current sample cannot
   be ended from here.
 - **open ↗** switches to that session in the Claude desktop app.
-- **✨ Sort it out with Claude** asks Claude in the current session to triage the load.
+- **✻ Sort it out with Claude** asks Claude in the current session to triage the load.
   Archiving sessions needs the desktop app's session tools; in a terminal Claude tells you
   what to close instead.
 

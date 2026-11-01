@@ -77,7 +77,7 @@ und Test-Runnern, und der Rechner kriecht, während der Task-Manager eine Wand a
 | ⚠️ **Verwaiste Prozesse** | Dev-Prozesse, deren Elternprozess beendet wurde (ein vite-Server, ein Language Server, ein liegengebliebener Python-Lauf), anhand des Arbeitsverzeichnisses ihrem Repository oder Worktree zugeordnet und nach einer Bestätigung mit einem Klick beendet |
 | 🧩 **Alles andere** | Weitere Prozesse nach Namen zusammengefasst (`chrome ×31`), damit du siehst, ob das Problem überhaupt bei Claude liegt |
 | 🔎 **Filter & Gruppen** | Alle · Aktiv · Schwer · Verwaist · Dieses Fenster; nach Sitzung, nach Repository (Worktrees eingefaltet), nach Prozess; Sortierung nach CPU oder Speicher |
-| ✨ **Mit Claude aufräumen** | Eine Schaltfläche: Der mitgelieferte Skill `sessions-triage` klassifiziert inaktive Sitzungen und verwaiste Prozesse, fragt einmal nach und archiviert oder beendet nur, was du freigibst |
+| ✻ **Mit Claude aufräumen** | Eine Schaltfläche: Der mitgelieferte Skill `sessions-triage` klassifiziert inaktive Sitzungen und verwaiste Prozesse, fragt einmal nach und archiviert oder beendet nur, was du freigibst |
 | 🚦 **Lastzeile** | Über der Eingabe bei hoher Last (CPU ≥ 50 % oder Speicher ≥ 85 %), mit den größten Verbrauchern |
 | 🌍 **8 Sprachen** | English, Русский, Deutsch, Español, Français, Português, 中文, 日本語 |
 
@@ -97,7 +97,7 @@ Im Panel:
   Messung unter demselben Namen geprüft. Die eigenen `claude`-Prozesse der Sitzungen und
   PIDs, die nicht in der aktuellen Messung stehen, lassen sich von hier aus nicht beenden.
 - **öffnen ↗** wechselt in der Claude Desktop-App zu dieser Sitzung.
-- **✨ Mit Claude aufräumen** bittet Claude in der aktuellen Sitzung, die Last zu sichten.
+- **✻ Mit Claude aufräumen** bittet Claude in der aktuellen Sitzung, die Last zu sichten.
   Das Archivieren von Sitzungen braucht die Sitzungswerkzeuge der Desktop-App; im Terminal
   sagt dir Claude stattdessen, was du schließen solltest.
 

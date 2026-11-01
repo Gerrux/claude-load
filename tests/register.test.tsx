@@ -47,7 +47,7 @@ const LIVE = [
   `4 0 ${MB} `, `21 4 ${300 * MB} 1700000000021`, `22 21 ${100 * MB} 1700000000500`, `23 21 ${900 * MB} 1600000000000`, `11 1 ${MB} 1700000000011`,
 ].join('\r\n')
 
-function world(on: On, files: Map<string, string>, runs: string[][], live: { text: string } = { text: LIVE }) {
+function world(on: On, files: Map<string, string>, runs: string[][], live: { text: string; hold?: (argv: string[]) => Promise<string> | null } = { text: LIVE }) {
   mock.store(on, {})
   on('env.get', ($, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : e.name === 'USERPROFILE' ? 'C:\\Users\\u' : undefined }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -60,8 +60,10 @@ function world(on: On, files: Map<string, string>, runs: string[][], live: { tex
     return { value: text }
   })
   on('fs.write', ($, e) => { files.set(e.path, e.text); return { value: undefined } })
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     runs.push([...e.argv])
+    const held = live.hold?.([...e.argv])
+    if (held) return { value: { exitCode: 0, stdout: await held, stderr: '' } }
     return { value: { exitCode: 0, stdout: e.argv.some(a => a.includes('Win32_Process')) ? live.text : '', stderr: '' } }
   })
   on('ui.log', () => ({ value: undefined }))
@@ -435,6 +437,33 @@ describe('the mod', () => {
     expect((await pane.find({ type: 'Text', text: /2 processes · 400 MB/ }))?.text).toMatch(/orphan webapp\/fix-x · 2 processes · 400 MB · together with its child processes/)
     await pane.press({ key: 'kill-yes' })
     expect(runs.find(a => a[0] === 'toast')?.[1]).toBe('Ended node #21 (orphan webapp/fix-x) · about 400 MB freed')
+  })
+
+  // The click's live listing may answer after Yes: the kill path decides alone, the late preview is dropped.
+  test('a preview that answers after Yes neither refuses nor adds a toast', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const files = new Map<string, string>([[SNAP, JSON.stringify(snapshot())]])
+    const runs: string[][] = []
+    let release: (() => void) | null = null
+    let calls = 0
+    world(on, files, runs, {
+      text: LIVE,
+      hold: argv => argv.some(a => a.includes('Win32_Process')) && ++calls === 1
+        ? new Promise<string>(r => { release = () => r(LIVE.replace(/^21 4 .*$/m, '')) })
+        : null,
+    })
+    await $.session.start(session)
+    await $.command.run(run(''))
+    const pane = await $.ui.mount({ plugin: 'claude-load', surface: 'terminal', component: 'Pane', requestId: 'claude-load', props: paneProps })
+    await pane.press({ key: 'f-orphans' })
+    const pressing = pane.press({ key: 'o0-k0' })
+    await pressing
+    expect(release).not.toBe(null)
+    await pane.press({ key: 'kill-yes' })
+    release!()
+    await new Promise(r => setTimeout(r, 50))
+    const toasts = runs.filter(a => a[0] === 'toast').map(a => a[1])
+    expect(toasts).toEqual(['Ended node #21 (orphan webapp/fix-x) · about 400 MB freed'])
   })
 
   test('sorted by memory, the graphs show memory, with the CPU history as fallback when a sampler has none', async ($, on) => {

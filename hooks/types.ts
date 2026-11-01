@@ -43,7 +43,10 @@ export type History = {
 }
 
 export type Snapshot = {
-  /** The format: absent (1.0.0), 2 with `Top.started`. A mod replaces a sampler that writes an older one. */
+  /**
+   * The format: absent (1.0.0), 2 with `Top.started`, 3 with `OutsideLoad.top` and the memory history.
+   * A mod replaces a sampler that writes an older one.
+   */
   v?: number
   /** Epoch milliseconds of the sample. */
   ts: number
