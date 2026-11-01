@@ -137,7 +137,26 @@ describe('macOS/Linux glue', () => {
     const snap = JSON.parse(files.get(`${STATE}/snapshot.json`)!) as Snapshot
     expect(snap.orphans[0].top[0]).toMatchObject({ name: 'python3', pid: 2000, started: 'Mon Nov 2 09:00:00 2026' })
     expect(st.envs.length).toBe(2)
-    expect(st.envs.every(env => env?.LC_ALL === 'C')).toBe(true)
+    expect(st.envs.every(env => env?.LC_TIME === 'C' && env?.LC_ALL === '' && env?.TZ === 'UTC')).toBe(true)
+    expect(snap.v).toBe(2)
+  })
+
+  test('a leader on an older mod loses the lease to this session', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const files = new Map<string, string>([[`${STATE}/posix-leader.json`, JSON.stringify({ id: 'OTHER', ts: NOW })]])
+    const runs: string[][] = []
+    linux(on, files, runs, { session: 1, orphan: 1 })
+    // OTHER (1.0.0) renews its lease and writes snapshots without a format version.
+    const old = { ts: NOW, intervalMs: 5000, cores: 8, cpu: 1, memTotalMB: 1, memUsedMB: 1, warm: true, sessions: [], orphans: [], outside: [] }
+    files.set(`${STATE}/snapshot.json`, JSON.stringify(old))
+    await $.session.start(session)
+    await clock.advance(1)
+    expect(runs.some(a => a[0] === 'ps')).toBe(false)
+    files.set(`${STATE}/posix-leader.json`, JSON.stringify({ id: 'OTHER', ts: NOW + 5000 }))
+    files.set(`${STATE}/snapshot.json`, JSON.stringify({ ...old, ts: NOW + 5000 }))
+    await clock.advance(5000)
+    expect(runs.some(a => a[0] === 'ps')).toBe(true)
+    expect(JSON.parse(files.get(`${STATE}/posix-leader.json`)!).id).toBe('S1')
   })
 
   test('SIGKILL after the grace period spares a PID that a new process took meanwhile', async ($, on) => {

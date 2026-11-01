@@ -20,7 +20,7 @@ const run = (args: string) => ({ command: 'load', args, origin: { kind: 'compose
 
 function snapshot(over: Partial<Snapshot> = {}): Snapshot {
   return {
-    ts: NOW, intervalMs: 4000, cores: 16, cpu: 72, memTotalMB: 65457, memUsedMB: 42000, warm: true,
+    v: 2, ts: NOW, intervalMs: 4000, cores: 16, cpu: 72, memTotalMB: 65457, memUsedMB: 42000, warm: true,
     sessions: [
       {
         pid: 1, name: 'Power line processing', status: 'busy', cwd: 'C:\\repo\\pipeline', hostSessionId: 'local_aaaa-1', sessionId: 'S1',
@@ -273,6 +273,37 @@ describe('the mod', () => {
     expect(runs.length).toBe(1)
     await clock.advance(25000)
     expect(runs.length).toBe(2)
+  })
+
+  test('a fresh snapshot of an older format starts this sampler over it, at most every 30 s and three times', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const old = snapshot()
+    delete old.v
+    const files = new Map<string, string>([[SNAP, JSON.stringify(old)]])
+    const runs: string[][] = []
+    world(on, files, runs)
+    await $.session.start(session)
+    await clock.advance(1)
+    const replaces = () => runs.filter(a => a.join(' ').includes("'-Replace'")).length
+    expect(replaces()).toBe(1)
+    expect(runs[0].join(' ')).toMatch(/load-sampler\.ps1"','-Replace'$/)
+    // The old sampler keeps the snapshot fresh: no plain respawn, only replacements.
+    for (let i = 1; i <= 30; i++) {
+      files.set(SNAP, JSON.stringify({ ...old, ts: NOW + i * 5000 }))
+      await clock.advance(5000)
+    }
+    expect(replaces()).toBe(3)
+    expect(runs.filter(a => a[0] === 'powershell.exe').length).toBe(3)
+  })
+
+  test('a snapshot of the current format starts nothing', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const files = new Map<string, string>([[SNAP, JSON.stringify(snapshot())]])
+    const runs: string[][] = []
+    world(on, files, runs)
+    await $.session.start(session)
+    await clock.advance(1)
+    expect(runs.some(a => a[0] === 'powershell.exe')).toBe(false)
   })
 
   for (const surface of ['terminal', 'desktop'] as const) {

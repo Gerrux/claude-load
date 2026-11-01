@@ -16,9 +16,12 @@ Ending a process checks that it is still the process you chose.
 - A shell that another (nested) session runs in is no longer offered for ending.
 - The `sessions-triage` skill checks the start time the same way before ending anything.
 - A `ps` without `lstart` (busybox) still samples; nothing can be ended there.
-- Upgrading on Windows: a 1.0.0 sampler that is still running writes no start times, and
-  the end button refuses until it is replaced (end the hidden `powershell.exe` running
-  `load-sampler.ps1`, or close every session for 3 minutes).
+- Snapshots carry a format version. A 1.0.1 session that reads an older one replaces the
+  older sampler: on Windows it starts the new sampler, which takes over the pid file, and
+  the old one exits by itself at the end of its next pass; on macOS and Linux it takes
+  over the leader lease.
+- A process that took a PID between the process list and the start-time query of one
+  Windows sampler pass gets no start time (and cannot be ended) instead of the newcomer's.
 
 ## 1.0.0
 

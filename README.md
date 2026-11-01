@@ -134,10 +134,11 @@ from the process itself (Windows reads it from the process's memory, Linux from
 - **"The sampler does not start"** (Windows): PowerShell scripts are blocked by policy
   (`AllSigned` or Constrained Language Mode). The sampler needs to run
   `sampler/load-sampler.ps1` from the plugin folder.
-- **"This process cannot be ended from here" after updating to 1.0.1** (Windows): a sampler
-  from 1.0.0 is still running and writes no start times. End the hidden `powershell.exe`
-  running `load-sampler.ps1` in Task Manager, or close every Claude Code session for
-  3 minutes; the next session starts the new one.
+- **"This process cannot be ended from here" for every process after updating to 1.0.1**
+  (Windows): a 1.0.1 session replaces a running 1.0.0 sampler within a few seconds; if
+  the button still refuses, end the hidden `powershell.exe` running `load-sampler.ps1` in
+  Task Manager. A process younger than about 8 seconds cannot be ended yet: its start
+  time is not sampled.
 - **Nothing shows on macOS/Linux:** check that `ps` is on `PATH`; `lsof` (macOS) is
   needed only for orphans.
 

@@ -51,8 +51,15 @@ export function psArgv(platform: 'darwin' | 'linux', withStart = true): string[]
   return ['ps', platform === 'darwin' ? '-axo' : '-eo', withStart ? 'pid=,ppid=,time=,rss=,lstart=,comm=' : 'pid=,ppid=,time=,rss=,comm=']
 }
 
-/** macOS ps formats `lstart` with the locale's `%c`: in the C locale it is always five words. */
-export const PS_ENV = { LC_ALL: 'C' }
+/**
+ * macOS ps formats `lstart` with the locale's `%c`: in the C time locale it is always five words.
+ * Only LC_TIME (an empty LC_ALL counts as unset): LC_ALL=C would print non-ASCII names as `?`.
+ * And in UTC: every session's ps, and the skill's, must print one process's start time alike.
+ */
+export const PS_ENV = { LC_ALL: '', LC_TIME: 'C', TZ: 'UTC' }
+
+/** The snapshot format these samplers write (Snapshot.v). */
+export const SNAP_V = 2
 
 /** Output of psArgv's ps, with or without `lstart`. Malformed lines are skipped. */
 export function parsePs(text: string, withStart = true): PsRow[] {
@@ -357,6 +364,7 @@ export function buildSnapshot(
   memory.prevAt = now
 
   return {
+    v: SNAP_V,
     ts: now,
     intervalMs: input.intervalMs,
     cores,

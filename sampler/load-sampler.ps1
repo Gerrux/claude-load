@@ -9,7 +9,10 @@
 param(
   [int]$IntervalMs = 4000,
   [int]$IdleExitSec = 180,
-  [switch]$Once
+  [switch]$Once,
+  # Started by a newer mod over an older sampler: take the pid file instead of leaving. The older
+  # one sees the file name another live sampler at the end of its tick and exits by itself.
+  [switch]$Replace
 )
 $ErrorActionPreference = 'SilentlyContinue'
 
@@ -35,7 +38,7 @@ function Test-OtherSampler {
 }
 
 if (-not $Once) {
-  if (Test-OtherSampler) { exit 0 }
+  if (-not $Replace -and (Test-OtherSampler)) { exit 0 }
   Set-Content -Path $pidPath -Value $PID -Encoding ascii
   Start-Sleep -Milliseconds 300
   if ((Get-Content $pidPath -Raw).Trim() -ne "$PID") { exit 0 }  # lost the race to another start
@@ -183,7 +186,9 @@ while ($true) {
     $freshCreated = @{}
     foreach ($w in Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate) {
       $fresh[[int]$w.ProcessId] = [int]$w.ParentProcessId
-      if ($w.CreationDate) { $freshCreated[[int]$w.ProcessId] = $w.CreationDate }
+      # A process created after Get-Process ran is a newer holder of that PID, not the one sampled:
+      # no start time for it (ending it is then refused) rather than the newcomer's.
+      if ($w.CreationDate -and $w.CreationDate -le $tickStart) { $freshCreated[[int]$w.ProcessId] = $w.CreationDate }
     }
     $parent = $fresh
     $created = $freshCreated
@@ -353,6 +358,7 @@ while ($true) {
   }
 
   $snapshot = [ordered]@{
+    v = 2  # the snapshot format (hooks/types.ts); 2 adds `started` to top rows
     ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     intervalMs = $IntervalMs
     cores = $cores

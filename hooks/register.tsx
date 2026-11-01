@@ -2,7 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import { STRINGS, fmtMem as fmtMemIn, lead, pickLang, plural } from './i18n'
 import type { Lang } from './i18n'
-import { PS_ENV, buildSnapshot, freshMemory, orphanCandidates, parseLsofCwd, parseMeminfo, parsePs, parseSessionFile, parseVmStat, psArgv } from './posix'
+import { PS_ENV, SNAP_V, buildSnapshot, freshMemory, orphanCandidates, parseLsofCwd, parseMeminfo, parsePs, parseSessionFile, parseVmStat, psArgv } from './posix'
 import type { SamplerMemory, SessionMeta } from './posix'
 import type { ByName, OrphanLoad, OutsideLoad, Snapshot, Top } from './types'
 
@@ -346,6 +346,8 @@ type State = {
   lastSpawn: number
   /** Windows: sampler starts since the last fresh snapshot; three without one means it is blocked. */
   spawns: number
+  /** Windows: starts over a sampler that writes an older snapshot format; three at most. */
+  replaces: number
   timer: { cancel: () => void } | null
   /** macOS/Linux leader's sampling memory, and facts read once. */
   posix: SamplerMemory
@@ -360,7 +362,7 @@ export function freshState(): State {
   return {
     snap: null, selfId: null, band: 'auto', filter: 'all', group: 'sessions', sort: 'cpu', showAll: false,
     expanded: new Set(), confirm: null, platform: 'other', home: '', sep: '/', stateDir: '', script: '',
-    lastWanted: 0, lastSpawn: 0, spawns: 0, timer: null, posix: freshMemory(), cores: 0, memBytes: 0, cwdCache: new Map(), sampling: false,
+    lastWanted: 0, lastSpawn: 0, spawns: 0, replaces: 0, timer: null, posix: freshMemory(), cores: 0, memBytes: 0, cwdCache: new Map(), sampling: false,
   }
 }
 
@@ -390,32 +392,41 @@ async function detectPlatform($: EngineInterface): Promise<Platform> {
   return 'other'
 }
 
-/** The PowerShell line that starts the sampler hidden; `'` in the path (C:\Users\O'Brien) is doubled. */
-export function samplerCommand(script: string): string {
+/**
+ * The PowerShell line that starts the sampler hidden; `'` in the path (C:\Users\O'Brien) is doubled.
+ * `replace`: over a running sampler of an older version, which then exits by itself.
+ */
+export function samplerCommand(script: string, replace = false): string {
   const quoted = `'"${script.replace(/'/g, "''")}"'`
-  return `Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',${quoted}`
+  return `Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',${quoted}${replace ? ",'-Replace'" : ''}`
 }
 
 function isBlocked(st: State): boolean {
   return st.platform === 'win32' && st.spawns >= 3
 }
 
-async function spawnSampler($: EngineInterface, st: State) {
+async function spawnSampler($: EngineInterface, st: State, replace = false) {
   st.lastSpawn = await $.clock.now()
-  st.spawns++
+  if (replace) st.replaces++
+  else st.spawns++
   try {
-    await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', samplerCommand(st.script)], { timeoutMs: 20000, cwd: st.home || undefined })
+    await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', samplerCommand(st.script, replace)], { timeoutMs: 20000, cwd: st.home || undefined })
   } catch (err) {
     $.ui.log(tr().samplerFailed(err instanceof Error ? err.message : String(err)))
   }
 }
 
-/** macOS/Linux: one session samples; it holds a lease it renews every pass. */
+/**
+ * macOS/Linux: one session samples; it holds a lease it renews every pass. A leader that writes an
+ * older snapshot format (a session still on an older mod) loses the lease to this one, and stops
+ * sampling once it reads the lease renewed under another id.
+ */
 async function claimLeader($: EngineInterface, st: State, now: number): Promise<boolean> {
   const file = `${st.stateDir}/posix-leader.json`
+  const takeOver = !!st.snap && (st.snap.v ?? 1) < SNAP_V
   try {
     const lease = JSON.parse(String(await $.fs.read(file))) as { id?: string; ts?: number }
-    if (lease.id !== st.selfId && now - (lease.ts ?? 0) < LEADER_STALE_MS) return false
+    if (lease.id !== st.selfId && now - (lease.ts ?? 0) < LEADER_STALE_MS && !takeOver) return false
   } catch {
     // No lease yet: take it.
   }
@@ -520,6 +531,9 @@ async function tick($: EngineInterface, st: State) {
   try { fresh = JSON.parse(String(await $.fs.read(`${st.stateDir}${st.sep}snapshot.json`))) as Snapshot } catch { fresh = null }
   if (fresh && now - fresh.ts <= STALE_MS) st.spawns = 0
   if (st.platform === 'win32' && (!fresh || now - fresh.ts > STALE_MS) && now - st.lastSpawn > RESPAWN_MS) await spawnSampler($, st)
+  // A sampler of an older version keeps running while sessions want it, and its snapshots carry no
+  // start times, so nothing could be ended: start this version's over it.
+  else if (st.platform === 'win32' && fresh && (fresh.v ?? 1) < SNAP_V && now - st.lastSpawn > RESPAWN_MS && st.replaces < 3) await spawnSampler($, st, true)
   if (fresh && fresh.ts !== st.snap?.ts && fresh.warm) {
     st.snap = fresh
     $.ui.invalidate('ui.render')

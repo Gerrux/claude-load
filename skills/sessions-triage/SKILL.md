@@ -13,8 +13,8 @@ The load comes from claude-load's snapshot, `<home>/.claude/state/load/snapshot.
 `orphans[]` (processes whose parent died, with `label`, `root`, `top[]` PIDs) and
 `outside[]` (other processes folded by name). Each `top[]` row has `name`, `pid` and
 `started`, the process's start time (Windows: epoch milliseconds; macOS/Linux: `ps`
-`lstart` in the C locale); a PID with its name can pass to a new process, the start time
-cannot. A snapshot older than 30 s means the
+`lstart` in UTC and the C time locale); a PID with its name can pass to a new process,
+the start time cannot. A snapshot older than 30 s means the
 sampler is not running: say so and suggest opening `/load`.
 
 ## 1. Gather
@@ -72,11 +72,12 @@ be freed if everything is accepted.
     }
   }
   $tree.Reverse()
-  Stop-Process -Id $tree -Force
+  Stop-Process -Id $tree.ToArray() -Force
   ```
 
-- macOS/Linux: `LC_ALL=C ps -o lstart= -p <pid>` must print `started` (runs of spaces
-  count as one). Take the tree from one listing, `LC_ALL=C ps -axo pid=,ppid=,lstart=`
+- macOS/Linux: `LC_ALL= LC_TIME=C TZ=UTC ps -o lstart= -p <pid>` must print `started`
+  (runs of spaces count as one; the sampler reads `lstart` in UTC and the C time locale).
+  Take the tree from one listing, `LC_ALL= LC_TIME=C TZ=UTC ps -axo pid=,ppid=,lstart=`
   (`-eo` on Linux): the PID and its descendants by `ppid`, each with its `lstart`.
   `kill -TERM` them all; after 3 s list again and `kill -KILL` only the PIDs still
   there with the same `lstart`: a PID freed by SIGTERM may already be another process.

@@ -37,6 +37,8 @@ export type OutsideLoad = { name: string; count: number; cpu: number; memMB: num
 export type History = { cpu: number[]; mem: number[]; sessions: Record<string, number[]>; orphans: Record<string, number[]> }
 
 export type Snapshot = {
+  /** The format: absent (1.0.0), 2 with `Top.started`. A mod replaces a sampler that writes an older one. */
+  v?: number
   /** Epoch milliseconds of the sample. */
   ts: number
   intervalMs: number
