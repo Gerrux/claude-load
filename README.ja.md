@@ -146,6 +146,7 @@ python "$HOME/.claude/state/queue/runq.py" --mem 20 --tag helios --label "scan 1
 | `--label <text>` | ペインとログがジョブを呼ぶ名前（デフォルト：コマンド） |
 | `--max-mem <GB>` | コマンド自身のプロセスツリーがこの値を超えたら終了させる |
 | `--max-wait <min>` | これだけ待ったらあきらめる（終了コード 75） |
+| `--note <text>` | フィード用の 1 行。ジョブの `queued` イベントと一緒に表示される |
 
 | 終了コード | |
 | --- | --- |
@@ -160,8 +161,12 @@ python "$HOME/.claude/state/queue/runq.py" --mem 20 --tag helios --label "scan 1
 
 `runq.py status` は、実行中のものと待機中のもの（とその理由）、空き commit、RAM、ディスクを表示します。
 `runq.py log --since 30m`（または `-n 50`、ISO 時刻、`--json`）はイベントを表示します：queued、
-started、finished、killed、failed、stale、cancelled、gave-up。ペインは、何かが実行中または待機中の間、
-そしてその後 2 時間、同じ内容を **実行キュー** セクションに表示します。
+waiting（その理由。理由が変わるたびに再度記録）、started、finished、killed、failed、stale、cancelled、
+gave-up、note。`runq.py note "<text>"` はエージェント自身の 1 行を追加するので（「D: ほぼ満杯、古いスキャンを削除中」）、
+フィードはマシンについての会話のようにも読めます。これはログであり、誰にも通知されません。ペインは、
+何かが実行中または待機中の間、そしてその後 2 時間、キューを **実行キュー** セクションに表示します。
+そこにある **ログ ↗**（または `/load queue`）は、フィードを独立したペインとして開きます：直近 24 時間、
+新しい順、イベントごとに 1 行：時刻、セッション、ジョブ、何が起きたか、その理由。
 
 **runq が触れるもの。** 他のプロセスのメモリは、マシン全体の合計値を通してしか読みません。終了させる
 のは自分のコマンドのプロセスツリーだけで、それも `--max-mem` を使ったときに限ります。Windows では

@@ -141,6 +141,7 @@ runq 自己的输出走 stderr，并以 `runq:` 开头：等待期间每 30 秒�
 | `--label <text>` | 面板和日志对该任务的称呼（默认：命令本身） |
 | `--max-mem <GB>` | 命令自身的进程树超过该值时将其结束 |
 | `--max-wait <min>` | 等待这么久后放弃（退出码 75） |
+| `--note <text>` | 给动态记录的一行文字，与该任务的 `queued` 事件一起显示 |
 
 | 退出码 | |
 | --- | --- |
@@ -155,8 +156,11 @@ runq 自己的输出走 stderr，并以 `runq:` 开头：等待期间每 30 秒�
 
 `runq.py status` 显示正在运行和正在等待的任务（及原因）、可用 commit、内存和磁盘；
 `runq.py log --since 30m`（或 `-n 50`、ISO 时间、`--json`）显示事件：queued、started、finished、
-killed、failed、stale、cancelled、gave-up。只要有任务在运行或等待，面板就会在 **运行队列**
-部分显示同样的内容，此后还会保留两小时。
+waiting（及原因，原因每次变化时会再记一次）、started、finished、killed、failed、stale、cancelled、gave-up、note。
+`runq.py note "<text>"` 会添加一行智能体自己的话（"D: 快满了，正在清理旧扫描"），因此动态记录
+读起来也像一段关于机器的对话；它只是日志，不会通知任何人。只要有任务在运行或等待，面板就会在
+**运行队列** 部分显示队列，此后还会保留两小时；其中的 **日志 ↗**（或 `/load queue`）会把动态记录
+作为单独的面板打开：最近 24 小时，最新的在前，每个事件一行：时间、会话、任务、发生了什么以及原因。
 
 **runq 会动什么。** 它只通过机器的总量来读取其他进程的内存。它结束的唯一进程是自己命令的进程树，
 并且只在使用 `--max-mem` 时。在 Windows 上，命令运行在 Job Object 中：其进程树恰好就是该作业的

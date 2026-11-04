@@ -151,6 +151,7 @@ wartet) sowie am Ende Exit, Laufzeit und Spitzenspeicher.
 | `--label <text>` | wie Panel und Log den Job nennen (Standard: der Befehl) |
 | `--max-mem <GB>` | beendet den eigenen Prozessbaum des Befehls, wenn er darüber geht |
 | `--max-wait <min>` | gibt nach so langem Warten auf (Exit 75) |
+| `--note <text>` | eine Zeile für den Feed, zusammen mit dem `queued`-Ereignis des Jobs angezeigt |
 
 | Exit | |
 | --- | --- |
@@ -165,9 +166,14 @@ wartet) sowie am Ende Exit, Laufzeit und Spitzenspeicher.
 
 `runq.py status` zeigt, was läuft und was wartet (und warum), freien Commit, RAM und
 Datenträger; `runq.py log --since 30m` (oder `-n 50`, eine ISO-Zeit, `--json`) zeigt die
-Ereignisse: queued, started, finished, killed, failed, stale, cancelled, gave-up. Das Panel
-zeigt dasselbe in einem Abschnitt **Laufwarteschlange**, solange etwas läuft oder wartet,
-und danach noch zwei Stunden.
+Ereignisse: queued, waiting (und warum, erneut bei jeder Änderung des Grundes), started,
+finished, killed, failed, stale, cancelled, gave-up, note. `runq.py note "<text>"` fügt eine
+eigene Zeile des Agenten hinzu ("D: ist fast voll, räume alte Scans auf"), sodass der Feed
+auch wie ein Gespräch über die Maschine liest; es ist ein Log, niemand wird benachrichtigt.
+Das Panel zeigt die Warteschlange in einem Abschnitt **Laufwarteschlange**, solange etwas
+läuft oder wartet, und danach noch zwei Stunden; **Protokoll ↗** dort (oder `/load queue`)
+öffnet den Feed als eigenes Panel: die letzten 24 Stunden, neueste zuerst, eine Zeile pro
+Ereignis: Zeit, Sitzung, Job, was passiert ist und warum.
 
 **Was runq anfasst.** Den Speicher fremder Prozesse liest es nur über die Gesamtwerte des
 Rechners. Die einzigen Prozesse, die es je beendet, sind der Baum seines eigenen Befehls,

@@ -152,6 +152,7 @@ espera) e, no fim, a saída, o tempo de execução e o pico de memória.
 | `--label <text>` | como o painel e o log chamam o job (padrão: o comando) |
 | `--max-mem <GB>` | encerra a árvore de processos do próprio comando se ele passar desse valor |
 | `--max-wait <min>` | desiste depois de esperar tanto (saída 75) |
+| `--note <text>` | uma linha para o feed, mostrada junto com o evento `queued` do job |
 
 | Saída | |
 | --- | --- |
@@ -166,9 +167,13 @@ espera) e, no fim, a saída, o tempo de execução e o pico de memória.
 
 `runq.py status` mostra o que roda e o que espera (e por quê), o commit livre, a RAM e os
 discos; `runq.py log --since 30m` (ou `-n 50`, um horário ISO, `--json`) mostra os eventos:
-queued, started, finished, killed, failed, stale, cancelled, gave-up. O painel mostra o
-mesmo em uma seção **Fila de execuções** enquanto algo roda ou espera, e por duas horas
-depois.
+queued, waiting (e por quê, de novo sempre que o motivo muda), started, finished, killed,
+failed, stale, cancelled, gave-up, note. `runq.py note "<text>"` adiciona uma linha própria
+do agente ("D: quase cheio, limpando scans antigos"), então o feed também se lê como uma
+conversa sobre a máquina; é um log, ninguém é notificado. O painel mostra a fila em uma seção
+**Fila de execuções** enquanto algo roda ou espera, e por duas horas depois; **registro ↗**
+ali (ou `/load queue`) abre o feed como um painel próprio: as últimas 24 horas, o mais
+recente primeiro, uma linha por evento: hora, sessão, job, o que aconteceu e por quê.
 
 **O que o runq toca.** Ele lê a memória de outros processos apenas pelos totais da máquina.
 Os únicos processos que ele encerra são a árvore do seu próprio comando, e só com

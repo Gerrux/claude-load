@@ -154,6 +154,7 @@ le pic de mémoire.
 | `--label <text>` | le nom que le panneau et le journal donnent au job (par défaut : la commande) |
 | `--max-mem <GB>` | arrête l'arbre de processus de la commande elle-même s'il dépasse cette valeur |
 | `--max-wait <min>` | abandonne après avoir attendu aussi longtemps (sortie 75) |
+| `--note <text>` | une ligne pour le fil, affichée avec l'événement `queued` du job |
 
 | Sortie | |
 | --- | --- |
@@ -168,9 +169,14 @@ le pic de mémoire.
 
 `runq.py status` montre ce qui s'exécute et ce qui attend (et pourquoi), le commit libre, la
 RAM et les disques ; `runq.py log --since 30m` (ou `-n 50`, une heure ISO, `--json`) montre
-les événements : queued, started, finished, killed, failed, stale, cancelled, gave-up. Le
-panneau montre la même chose dans une section **File d'exécution** tant que quelque chose
-s'exécute ou attend, et pendant deux heures ensuite.
+les événements : queued, waiting (et pourquoi, de nouveau à chaque changement de motif),
+started, finished, killed, failed, stale, cancelled, gave-up, note. `runq.py note "<text>"`
+ajoute une ligne propre à l'agent (« D: presque plein, nettoyage des vieux scans »), si bien
+que le fil se lit aussi comme une conversation sur la machine ; c'est un journal, personne
+n'est notifié. Le panneau montre la file dans une section **File d'exécution** tant que
+quelque chose s'exécute ou attend, et pendant deux heures ensuite ; **journal ↗** ouvre le
+fil comme un panneau à part (ou `/load queue`) : les dernières 24 heures, le plus récent en
+premier, une ligne par événement : heure, session, job, ce qui s'est passé et pourquoi.
 
 **Ce que runq touche.** Il ne lit la mémoire des autres processus que par les totaux de la
 machine. Les seuls processus qu'il arrête sont l'arbre de sa propre commande, et seulement
