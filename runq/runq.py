@@ -37,7 +37,7 @@ from pathlib import Path
 
 # Raised with every change: the claude-load mod copies this file to the queue folder and never
 # replaces a newer copy with an older one.
-__version__ = 2
+__version__ = 3
 
 WIN = os.name == 'nt'
 MB = 1024 * 1024
@@ -998,6 +998,7 @@ def cmd_run(argv: list[str]) -> int:
     save('started', waitS=round(wait_ms / 1000), pid=p.pid)
     sample = env_float('RUNQ_SAMPLE', 2.0)
     killed_for = None
+    sample_failed = False
     code = None
     while code is None:
         try:
@@ -1020,6 +1021,11 @@ def cmd_run(argv: list[str]) -> int:
                      f'({len(pids)} processes: {", ".join(map(str, pids))})')
         except KeyboardInterrupt:
             continue
+        except Exception as err:  # noqa: BLE001
+            # A failed reading must not end runq: its job object would take the command along.
+            if not sample_failed:
+                note(f'could not sample the command ({err}); it runs on, the queue keeps its last figures')
+                sample_failed = True
     with contextlib.suppress(Exception):
         tree.mem_mb()
     release_job_object(jobh)
