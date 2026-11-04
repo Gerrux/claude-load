@@ -2,9 +2,10 @@
 """runq: a run queue for one machine, shared by parallel Claude Code sessions.
 
     runq --mem <GB> [--tag <name>]... [--disk D:=<GB>]... [--label <text>] [--max-mem <GB>]
-         [--max-wait <min>] -- <command> [args...]
+         [--max-wait <min>] [--note <text>] -- <command> [args...]
     runq status [--json]
     runq log [--since 30m|<ISO time>|<epoch ms>] [-n 30] [--json]
+    runq note [--job <id>] "<text>"     a line of your own in the feed, about the machine
     runq config
 
 A job waits, first come first served, until the machine has room for it: free commit at least
@@ -36,7 +37,7 @@ from pathlib import Path
 
 # Raised with every change: the claude-load mod copies this file to the queue folder and never
 # replaces a newer copy with an older one.
-__version__ = 1
+__version__ = 2
 
 WIN = os.name == 'nt'
 MB = 1024 * 1024
@@ -174,14 +175,22 @@ class Store:
             os.close(fd)
 
     def read_jobs(self) -> list[dict]:
+        """Every job file. Windows refuses a read while a writer replaces the file: such a file is
+        read again rather than skipped, since a skipped running job frees its tags and memory."""
         out = []
         for p in sorted(self.jobs.glob('*.json')):
             j = read_json(p)
+            for _ in range(100):
+                if j is not None or not p.exists():
+                    break
+                time.sleep(0.01)
+                j = read_json(p)
             if isinstance(j, dict) and j.get('id'):
                 out.append(j)
         return out
 
     def write_job(self, job: dict) -> None:
+        job['beat'] = now_ms()
         write_json(self.jobs / f"{job['id']}.json", job)
 
     def remove_job(self, job_id: str) -> None:
@@ -195,7 +204,9 @@ class Store:
                 time.sleep(0.02)
 
     def event(self, ev: str, job: dict | None = None, **extra) -> None:
-        row = {'ts': now_ms(), 'ev': ev}
+        ts = now_ms()
+        # `hm`: the local time of day, for people reading the feed (the pane cannot tell the zone).
+        row = {'ts': ts, 'hm': time.strftime('%H:%M', time.localtime(ts / 1000)), 'ev': ev}
         if job:
             row.update({k: job.get(k) for k in ('id', 'label', 'session', 'sessionName', 'tags', 'memMB')})
         row.update({k: v for k, v in extra.items() if v is not None})
@@ -204,14 +215,27 @@ class Store:
             f.write(line)
         self._trim()
 
-    def _trim(self, max_bytes: int = 1 << 20, keep: int = 2000) -> None:
+    def _trim(self, max_bytes: int = 4 << 20, keep_ms: int = 48 * 3600 * 1000, keep_min: int = 500) -> None:
+        """Past 4 MB the log keeps its last two days (at least the last 500 events)."""
         try:
             if self.events.stat().st_size <= max_bytes:
                 return
-            lines = self.events.read_text(encoding='utf-8').splitlines(True)[-keep:]
-            write_json_text(self.events, ''.join(lines))
+            lines = self.events.read_text(encoding='utf-8').splitlines(True)
+            since = now_ms() - keep_ms
+            cut = 0
+            for i, line in enumerate(lines):
+                try:
+                    if json.loads(line).get('ts', 0) >= since:
+                        cut = i
+                        break
+                except ValueError:
+                    continue
+            else:
+                cut = len(lines)
+            write_json_text(self.events, ''.join(lines[min(cut, max(0, len(lines) - keep_min)):]))
         except OSError:
-            pass
+            with contextlib.suppress(OSError):
+                self.events.with_name(f'{self.events.name}.{os.getpid()}.tmp').unlink()
 
     def read_events(self) -> list[dict]:
         try:
@@ -303,12 +327,24 @@ def plan(jobs: list[dict], machine: dict, cfg: dict, now: int) -> dict:
             free -= need
             for d, n in (j.get('disks') or {}).items():
                 disk_free[d] = disk_free.get(d, 0.0) - float(n)
-        if mem_short and fair_block is None and now - float(j.get('queuedAt') or now) >= fair_ms:
+        # Only a job that waits for memory alone holds the rest back: one also held by a tag or
+        # a drive would hold them for nothing.
+        if mem_short and fair_block is None and now - float(j.get('queuedAt') or now) >= fair_ms \
+                and all(r['kind'] == 'mem' for r in reasons):
             fair_block = j.get('label') or j['id']
         # Later jobs with the same exclusive tag wait behind this one, started or not.
         for t in tags:
             held.setdefault(t, j.get('label') or j['id'])
     return out
+
+
+def why_key(reasons: list[dict]) -> tuple:
+    """What a job waits for, without the figures that change every poll."""
+    return tuple(sorted((r.get('kind', ''), r.get('tag') or r.get('drive') or r.get('by') or '') for r in reasons))
+
+
+def one_line(text: str, limit: int = 300) -> str:
+    return ' '.join(str(text).split())[:limit]
 
 
 def reason_text(r: dict) -> str:
@@ -575,12 +611,26 @@ def side_alive(side: dict | None) -> bool:
     return bool(side) and same_started(side.get('started'), proc_started(int(side.get('pid') or 0)))
 
 
+# A live runq rewrites its job file every poll or sample (2 s): one silent this long whose PID
+# cannot be queried (another user's process took it) is taken for gone.
+SILENT_MS = 120000
+
+
+def runner_alive(j: dict, now: int) -> bool:
+    side = j.get('runner') or {}
+    live = proc_started(int(side.get('pid') or 0))
+    if live == 'unknown' and now - int(j.get('beat') or j.get('queuedAt') or 0) > SILENT_MS:
+        return False
+    return same_started(side.get('started'), live)
+
+
 def reap(store: Store, jobs: list[dict]) -> list[dict]:
     """Drop jobs whose runq and command are both gone (a crash, a reboot, a killed shell); a
     command still alive after its runq died keeps its slot and tags. Under the lock."""
     keep = []
+    now = now_ms()
     for j in jobs:
-        runner, child = side_alive(j.get('runner')), side_alive(j.get('child'))
+        runner, child = runner_alive(j, now), side_alive(j.get('child'))
         if runner or (j.get('state') == 'running' and child):
             j['orphaned'] = not runner
             keep.append(j)
@@ -707,6 +757,12 @@ def make_job_object():
     return job
 
 
+def in_job(p: subprocess.Popen, job) -> bool:
+    inside = wt.BOOL()
+    handle = getattr(p, '_handle', None)
+    return bool(handle) and bool(IsProcessInJob(int(handle), job, ctypes.byref(inside))) and bool(inside.value)
+
+
 def release_job_object(job) -> None:
     if WIN and job:
         lim = EXT_LIMIT()
@@ -794,16 +850,20 @@ def cmd_run(argv: list[str]) -> int:
     tags: list[str] = []
     disks: dict[str, float] = {}
     label = ''
+    job_note = ''
+    takes = ('--mem', '--tag', '--disk', '--label', '--max-mem', '--max-wait', '--note')
     k = 0
     while k < len(opts):
         o = opts[k]
         val = opts[k + 1] if k + 1 < len(opts) else None
-        if '=' in o and o.startswith('--') and o.split('=', 1)[0] in ('--mem', '--tag', '--disk', '--label', '--max-mem', '--max-wait'):
+        if '=' in o and o.startswith('--') and o.split('=', 1)[0] in takes:
             o, val = o.split('=', 1)
             k -= 1
-        if o in ('--mem', '--tag', '--disk', '--label', '--max-mem', '--max-wait') and val is None:
+        if o in takes and val is None:
             return usage(f'{o} needs a value')
-        if o == '--mem':
+        if o == '--note':
+            job_note = one_line(val)
+        elif o == '--mem':
             mem = parse_gb(val, '--mem')
         elif o == '--max-mem':
             max_mem = parse_gb(val, '--max-mem')
@@ -848,14 +908,17 @@ def cmd_run(argv: list[str]) -> int:
         'runner': {'pid': me, 'started': proc_started(me)}, 'child': None, 'state': 'waiting',
         'queuedAt': t0, 'curMB': 0, 'peakMB': 0, 'reasons': [],
     }
+    if job_note:
+        job['note'] = job_note
     with store.locked():
         reap(store, store.read_jobs())
         store.write_job(job)
-        store.event('queued', job)
+        store.event('queued', job, note=job_note or None)
 
     poll = env_float('RUNQ_POLL', 2.0)
     every = env_float('RUNQ_NOTE_EVERY', 30.0) * 1000
     last_note = 0
+    last_why = None
     try:
         while True:
             with store.locked():
@@ -876,6 +939,11 @@ def cmd_run(argv: list[str]) -> int:
                     break
                 job['reasons'] = reasons
                 store.write_job(job)
+                # The feed says why a job waits, again whenever the reason changes.
+                why = why_key(reasons)
+                if why != last_why:
+                    store.event('waiting', job, reasons=reasons, waitS=round((now_ms() - t0) / 1000))
+                    last_why = why
             waited = now_ms() - t0
             if max_wait is not None and waited >= max_wait:
                 with store.locked():
@@ -910,13 +978,24 @@ def cmd_run(argv: list[str]) -> int:
             store.event('failed', job, waitS=round(wait_ms / 1000), error=msg)
         note(msg)
         return EXIT_CANNOT_EXEC
+    # A parent job that allows silent breakaway leaves the command outside ours: walk its tree then.
+    if jobh and not in_job(p, jobh):
+        jobh = None
     tree = Tree(p, proc_started(p.pid), jobh)
     job['child'] = {'pid': p.pid, 'started': tree.started}
     job['tree'] = 'job' if jobh else 'walk'
-    store.write_job(job)
-    with store.locked():
-        store.event('started', job, waitS=round(wait_ms / 1000), pid=p.pid)
 
+    def save(*event_args, **event_kw) -> None:
+        """The job file, and an event, under the lock: a reader never meets the file mid-replace."""
+        try:
+            with store.locked(timeout_s=10):
+                store.write_job(job)
+                if event_args:
+                    store.event(*event_args, job, **event_kw)
+        except TimeoutError:
+            pass
+
+    save('started', waitS=round(wait_ms / 1000), pid=p.pid)
     sample = env_float('RUNQ_SAMPLE', 2.0)
     killed_for = None
     code = None
@@ -929,27 +1008,33 @@ def cmd_run(argv: list[str]) -> int:
         except KeyboardInterrupt:
             # Ctrl+C reaches the command as well; its exit is what runq reports.
             continue
-        cur = tree.mem_mb()
-        job['curMB'] = round(cur)
-        job['peakMB'] = round(tree.peak)
-        store.write_job(job)
-        if max_mem is not None and cur > max_mem and killed_for is None:
-            killed_for = cur
-            pids = tree.kill_own()
-            note(f'the command took {gb(cur)}, over --max-mem {gb(max_mem)}: ended its own process tree '
-                 f'({len(pids)} processes: {", ".join(map(str, pids))})')
+        try:
+            cur = tree.mem_mb()
+            job['curMB'] = round(cur)
+            job['peakMB'] = round(tree.peak)
+            save()
+            if max_mem is not None and cur > max_mem and killed_for is None:
+                killed_for = cur
+                pids = tree.kill_own()
+                note(f'the command took {gb(cur)}, over --max-mem {gb(max_mem)}: ended its own process tree '
+                     f'({len(pids)} processes: {", ".join(map(str, pids))})')
+        except KeyboardInterrupt:
+            continue
     with contextlib.suppress(Exception):
         tree.mem_mb()
     release_job_object(jobh)
     run_ms = now_ms() - job['startedAt']
     peak = round(max(tree.peak, job.get('peakMB') or 0))
-    with store.locked():
-        store.remove_job(job['id'])
-        if killed_for is not None:
-            store.event('killed', job, exit=code, waitS=round(wait_ms / 1000), runS=round(run_ms / 1000), peakMB=peak,
-                        reason=f'own --max-mem {gb(max_mem)} exceeded at {gb(killed_for)}')
-        else:
-            store.event('finished', job, exit=code, waitS=round(wait_ms / 1000), runS=round(run_ms / 1000), peakMB=peak)
+    try:
+        with store.locked():
+            store.remove_job(job['id'])
+            if killed_for is not None:
+                store.event('killed', job, exit=code, waitS=round(wait_ms / 1000), runS=round(run_ms / 1000), peakMB=peak,
+                            reason=f'own --max-mem {gb(max_mem)} exceeded at {gb(killed_for)}')
+            else:
+                store.event('finished', job, exit=code, waitS=round(wait_ms / 1000), runS=round(run_ms / 1000), peakMB=peak)
+    except (TimeoutError, KeyboardInterrupt):
+        note('could not record the end in the queue; the next runq drops the job')
     note(f'exit {code} · ran {dur(run_ms)} · peak {gb(peak)}' + (f' · waited {dur(wait_ms)}' if wait_ms >= 1000 else ''))
     if code < 0:  # POSIX: ended by a signal
         return 128 - code
@@ -1037,10 +1122,31 @@ def event_text(e: dict) -> str:
         bits.append(f"peak {gb(e['peakMB'])}")
     if e.get('exit') is not None:
         bits.append(f"exit {e['exit']}")
+    if e.get('reasons'):
+        bits.append('· ' + '; '.join(reason_text(r) for r in e['reasons']))
     for k in ('reason', 'error'):
         if e.get(k):
             bits.append(f'· {e[k]}')
+    if e.get('note') or e.get('text'):
+        bits.append(f"“{e.get('note') or e.get('text')}”")
     return ' '.join(bits)
+
+
+def cmd_note(argv: list[str]) -> int:
+    """A line of the agent's own in the feed, about the machine: `runq note "<text>"`. A log
+    entry, not a message: nobody is notified."""
+    job_id = None
+    if len(argv) >= 2 and argv[0] == '--job':
+        job_id, argv = argv[1], argv[2:]
+    text = one_line(' '.join(argv))
+    if not text:
+        return usage('runq note "<text>": the text is missing')
+    store = Store(state_dir())
+    who = session_info()
+    job = next((j for j in store.read_jobs() if j['id'] == job_id), None) if job_id else None
+    with store.locked():
+        store.event('note', job, text=text, **({} if job else who))
+    return 0
 
 
 def cmd_log(argv: list[str]) -> int:
@@ -1087,7 +1193,7 @@ def main(argv: list[str]) -> int:
     if not argv or argv[0] in ('-h', '--help', 'help'):
         print(__doc__)
         return 0 if argv else EXIT_USAGE
-    sub = {'status': cmd_status, 'log': cmd_log, 'config': cmd_config}.get(argv[0])
+    sub = {'status': cmd_status, 'log': cmd_log, 'config': cmd_config, 'note': cmd_note}.get(argv[0])
     if sub:
         return sub(argv[1:])
     return cmd_run(argv)

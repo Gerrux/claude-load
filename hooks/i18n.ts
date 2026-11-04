@@ -115,6 +115,17 @@ export type Dict = {
   dur: (h: number, m: number, s: number) => string
   /** A duration (`dur`) since an event: "12 min ago". */
   queueAgo: (d: string) => string
+  /** The feed: the queue's events as a log people and agents read; its own pane. */
+  queuePaneTitle: string
+  queueLogButton: string
+  queueSummary: (running: number, waiting: number) => string
+  feedHeader: string
+  feedEmpty: string
+  feedMore: (n: number) => string
+  feedQueued: (mem: string) => string
+  /** `d` empty right after queueing. */
+  feedWaiting: (d: string, why: string) => string
+  feedStarted: (d: string) => string
 }
 
 const en: Dict = {
@@ -215,6 +226,15 @@ const en: Dict = {
   queueEmpty: 'No heavy runs right now.',
   dur: (h, m, s) => h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`,
   queueAgo: d => `${d} ago`,
+  queuePaneTitle: 'Machine queue',
+  queueLogButton: 'feed ↗',
+  queueSummary: (running, waiting) => `${running} running · ${waiting} waiting`,
+  feedHeader: 'Last 24 hours, newest first · agents add a line with runq note "<text>"',
+  feedEmpty: 'Nothing in the last 24 hours.',
+  feedMore: n => `+ ${n} earlier`,
+  feedQueued: mem => `queued, declared ${mem}`,
+  feedWaiting: (d, why) => d ? `waiting ${d}: ${why}` : `waiting: ${why}`,
+  feedStarted: d => d ? `started after ${d} in the queue` : 'started',
 }
 
 const ru: Dict = {
@@ -298,7 +318,7 @@ const ru: Dict = {
   queueDisk: (drive, free) => `${drive} свободно ${free}`,
   queueRun: (mem, now, peak, elapsed) => `заявлено ${mem} · сейчас ${now} · пик ${peak} · ${elapsed}`,
   queueWait: (mem, waited) => `заявлено ${mem} · ждёт ${waited}`,
-  queueWhyTag: (tag, by) => `${tag} занят: ${by}`,
+  queueWhyTag: (tag, by) => `занят тег ${tag} (${by})`,
   queueWhyMem: (need, guard, free) => `нужно ${need} + ${guard} запаса, свободно ${free}`,
   queueWhyBehind: by => `за ${by}, который ждёт памяти`,
   queueWhyDisk: (need, drive, free) => `нужно ${need} на ${drive}, свободно ${free}`,
@@ -315,6 +335,15 @@ const ru: Dict = {
   queueEmpty: 'Тяжёлых запусков сейчас нет.',
   dur: (h, m, s) => h ? `${h} ч ${m} мин` : m ? `${m} мин` : `${s} с`,
   queueAgo: d => `${d} назад`,
+  queuePaneTitle: 'Очередь машины',
+  queueLogButton: 'журнал ↗',
+  queueSummary: (running, waiting) => `идут: ${running} · ждут: ${waiting}`,
+  feedHeader: 'За сутки, новые сверху · агент добавляет строку: runq note "<текст>"',
+  feedEmpty: 'За сутки ничего не было.',
+  feedMore: n => `+ ещё ${n} раньше`,
+  feedQueued: mem => `в очереди, заявлено ${mem}`,
+  feedWaiting: (d, why) => d ? `ждёт ${d}: ${why}` : `ждёт: ${why}`,
+  feedStarted: d => d ? `запущен после ${d} в очереди` : 'запущен',
 }
 
 const de: Dict = {
@@ -415,6 +444,15 @@ const de: Dict = {
   queueEmpty: 'Gerade keine schweren Läufe.',
   dur: (h, m, s) => h ? `${h} Std. ${m} Min.` : m ? `${m} Min.` : `${s} s`,
   queueAgo: d => `vor ${d}`,
+  queuePaneTitle: 'Warteschlange der Maschine',
+  queueLogButton: 'Protokoll ↗',
+  queueSummary: (running, waiting) => `${running} laufen · ${waiting} warten`,
+  feedHeader: 'Letzte 24 Stunden, neueste zuerst · Agenten fügen eine Zeile hinzu mit runq note "<Text>"',
+  feedEmpty: 'In den letzten 24 Stunden nichts.',
+  feedMore: n => `+ ${n} früher`,
+  feedQueued: mem => `eingereiht, angemeldet ${mem}`,
+  feedWaiting: (d, why) => d ? `wartet ${d}: ${why}` : `wartet: ${why}`,
+  feedStarted: d => d ? `gestartet nach ${d} in der Warteschlange` : 'gestartet',
 }
 
 const es: Dict = {
@@ -515,6 +553,15 @@ const es: Dict = {
   queueEmpty: 'No hay ejecuciones pesadas ahora.',
   dur: (h, m, s) => h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`,
   queueAgo: d => `hace ${d}`,
+  queuePaneTitle: 'Cola de la máquina',
+  queueLogButton: 'registro ↗',
+  queueSummary: (running, waiting) => `en curso: ${running} · en espera: ${waiting}`,
+  feedHeader: 'Últimas 24 horas, lo más nuevo primero · los agentes añaden una línea con runq note "<texto>"',
+  feedEmpty: 'Nada en las últimas 24 horas.',
+  feedMore: n => `+ ${n} anteriores`,
+  feedQueued: mem => `en cola, declarado ${mem}`,
+  feedWaiting: (d, why) => d ? `espera ${d}: ${why}` : `espera: ${why}`,
+  feedStarted: d => d ? `iniciado tras ${d} en la cola` : 'iniciado',
 }
 
 const fr: Dict = {
@@ -615,6 +662,15 @@ const fr: Dict = {
   queueEmpty: 'Aucune exécution lourde en ce moment.',
   dur: (h, m, s) => h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`,
   queueAgo: d => `il y a ${d}`,
+  queuePaneTitle: 'File de la machine',
+  queueLogButton: 'journal ↗',
+  queueSummary: (running, waiting) => `${running} en cours · ${waiting} en attente`,
+  feedHeader: 'Dernières 24 heures, plus récent en premier · les agents ajoutent une ligne avec runq note "<texte>"',
+  feedEmpty: 'Rien au cours des dernières 24 heures.',
+  feedMore: n => `+ ${n} plus tôt`,
+  feedQueued: mem => `en file, déclaré ${mem}`,
+  feedWaiting: (d, why) => d ? `attend depuis ${d} : ${why}` : `attend : ${why}`,
+  feedStarted: d => d ? `démarré après ${d} dans la file` : 'démarré',
 }
 
 const pt: Dict = {
@@ -715,6 +771,15 @@ const pt: Dict = {
   queueEmpty: 'Nenhuma execução pesada agora.',
   dur: (h, m, s) => h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`,
   queueAgo: d => `há ${d}`,
+  queuePaneTitle: 'Fila da máquina',
+  queueLogButton: 'registro ↗',
+  queueSummary: (running, waiting) => `${running} em execução · ${waiting} aguardando`,
+  feedHeader: 'Últimas 24 horas, mais recentes primeiro · os agentes adicionam uma linha com runq note "<texto>"',
+  feedEmpty: 'Nada nas últimas 24 horas.',
+  feedMore: n => `+ ${n} anteriores`,
+  feedQueued: mem => `na fila, declarado ${mem}`,
+  feedWaiting: (d, why) => d ? `aguardando ${d}: ${why}` : `aguardando: ${why}`,
+  feedStarted: d => d ? `iniciado após ${d} na fila` : 'iniciado',
 }
 
 const zh: Dict = {
@@ -815,6 +880,15 @@ const zh: Dict = {
   queueEmpty: '目前没有重负载运行。',
   dur: (h, m, s) => h ? `${h}小时${m}分钟` : m ? `${m}分钟` : `${s}秒`,
   queueAgo: d => `${d}前`,
+  queuePaneTitle: '本机队列',
+  queueLogButton: '日志 ↗',
+  queueSummary: (running, waiting) => `运行中 ${running} · 等待中 ${waiting}`,
+  feedHeader: '最近 24 小时，最新在前 · 代理可用 runq note "<文本>" 添加一行',
+  feedEmpty: '最近 24 小时内没有记录。',
+  feedMore: n => `+ 另有 ${n} 条更早的`,
+  feedQueued: mem => `已排队，申报 ${mem}`,
+  feedWaiting: (d, why) => d ? `已等待 ${d}：${why}` : `等待中：${why}`,
+  feedStarted: d => d ? `排队 ${d} 后开始` : '已开始',
 }
 
 const ja: Dict = {
@@ -915,6 +989,15 @@ const ja: Dict = {
   queueEmpty: '現在、重い実行はありません。',
   dur: (h, m, s) => h ? `${h}時間${m}分` : m ? `${m}分` : `${s}秒`,
   queueAgo: d => `${d}前`,
+  queuePaneTitle: 'マシンのキュー',
+  queueLogButton: 'ログ ↗',
+  queueSummary: (running, waiting) => `実行中 ${running} · 待機中 ${waiting}`,
+  feedHeader: '直近 24 時間、新しい順 · エージェントは runq note "<テキスト>" で1行追加します',
+  feedEmpty: '直近 24 時間は何もありません。',
+  feedMore: n => `+ それ以前 ${n} 件`,
+  feedQueued: mem => `待機中、申告 ${mem}`,
+  feedWaiting: (d, why) => d ? `${d} 待機中: ${why}` : `待機中: ${why}`,
+  feedStarted: d => d ? `キューで ${d} 待って開始` : '開始',
 }
 
 export const STRINGS: Record<Lang, Dict> = { en, ru, de, es, fr, pt, zh, ja }

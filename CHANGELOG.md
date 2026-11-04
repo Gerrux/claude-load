@@ -17,6 +17,10 @@ A run queue for heavy runs, shared by every session on the machine.
 - The pane shows the run queue while anything runs or waits: running jobs with their
   memory and time, waiting jobs and why, free commit, RAM and disks, the last events. `/load`
   prints it too.
+- The feed (`/load queue`, or **feed ↗** in the pane): the queue's last 24 hours as a pane of
+  its own, newest first, one line per event with the session, the job, what happened and why
+  ("waiting 6 min: cargo-test is held by …"). Agents add lines of their own with
+  `runq note "<text>"` or `--note` on a job; it stays a log, nobody is notified.
 - Snapshot format 4 (Windows): commit and fixed drives' free space. A 1.2.0 session
   replaces an older sampler as before.
 

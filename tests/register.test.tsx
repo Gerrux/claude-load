@@ -595,12 +595,51 @@ describe('the mod', () => {
       expect(await pane.find({ type: 'Text', text: /declared 20\.0 GB · now 17\.6 GB · peak 18\.4 GB · 10 min · helios/ })).not.toBe(undefined)
       expect(await pane.find({ type: 'Text', text: /Webapp slides/ })).not.toBe(undefined)
       expect(await pane.find({ type: 'Text', text: /waiting 2 min · needs 8\.0 GB \+ 12\.0 GB guard, 8\.8 GB free/ })).not.toBe(undefined)
-      expect(await pane.find({ type: 'Text', text: /1 min ago · scan big · ended by its --max-mem · exit 137/ })).not.toBe(undefined)
+      expect(await pane.find({ type: 'Text', text: /1 min ago {2}scan big · ended by its --max-mem · exit 137/ })).not.toBe(undefined)
       const report = await $.command.run(run('')) as { text?: string }
       expect(report.text).toMatch(/Run queue · free commit/)
       expect(report.text).toMatch(/1\. cargo test ws \[Webapp slides\]/)
     })
   }
+
+  const FEED = [
+    { ts: NOW - 30 * 3600 * 1000, hm: '17:00', ev: 'finished', label: 'yesterday', exit: 0 },
+    { ts: NOW - 600000, hm: '20:50', ev: 'queued', label: 'cargo test', sessionName: 'treegrow-ф8', memMB: 8192, note: 'после правки крон' },
+    { ts: NOW - 590000, hm: '20:50', ev: 'waiting', label: 'cargo test', sessionName: 'treegrow-ф8', waitS: 0, reasons: [{ kind: 'tag', tag: 'cargo-test', by: 'phase7 tests' }] },
+    { ts: NOW - 240000, hm: '20:56', ev: 'waiting', label: 'cargo test', sessionName: 'treegrow-ф8', waitS: 360, reasons: [{ kind: 'mem', needMB: 8192, guardMB: 12288, freeMB: 9000 }] },
+    { ts: NOW - 60000, hm: '20:59', ev: 'note', sessionName: 'scan-lod', text: 'D: почти полон, чищу старые сканы' },
+  ].map(e => JSON.stringify(e)).join('\n')
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    kitTest(`${surface}: the feed pane reads as a log, newest first, a day back, in Russian`, { timeoutMs: 30000, options: { language: 'ru' } }, async ($, on) => {
+      mock.clock(on, { now: NOW })
+      world(on, new Map([[SNAP, JSON.stringify(snapshot())], [`${QDIR}\\events.jsonl`, FEED]]), [])
+      await $.session.start({ ...session, surface })
+      const r = await $.command.run(run('queue')) as { text?: string }
+      expect(r.text).toMatch(/^20:59 {2}scan-lod · «D: почти полон, чищу старые сканы»/m)
+      const pane = await $.ui.mount({ plugin: 'claude-load', surface, component: 'Pane', requestId: 'claude-load-queue', props: paneProps })
+      const lines = (await pane.findAll({ type: 'Text', text: /^\d\d:\d\d {2}/ } as never)).map((x: { text?: string }) => x.text ?? '')
+      expect(lines).toEqual([
+        '20:59  scan-lod · «D: почти полон, чищу старые сканы»',
+        '20:56  treegrow-ф8 · cargo test · ждёт 6 мин: нужно 8,0 ГБ + 12,0 ГБ запаса, свободно 8,8 ГБ',
+        '20:50  treegrow-ф8 · cargo test · ждёт: занят тег cargo-test (phase7 tests)',
+        '20:50  treegrow-ф8 · cargo test · в очереди, заявлено 8,0 ГБ · «после правки крон»',
+      ])
+    })
+  }
+
+  test('the feed pages a day back', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const many = Array.from({ length: 70 }, (_, i) => JSON.stringify({ ts: NOW - (70 - i) * 1000, ev: 'note', text: `n${i}` })).join('\n')
+    world(on, new Map([[SNAP, JSON.stringify(snapshot())], [`${QDIR}\\events.jsonl`, many]]), [])
+    await $.session.start(session)
+    await $.command.run(run('queue'))
+    const pane = await $.ui.mount({ plugin: 'claude-load', surface: 'terminal', component: 'Pane', requestId: 'claude-load-queue', props: paneProps })
+    expect(await pane.find({ type: 'Text', text: /«n69»/ })).not.toBe(undefined)
+    expect(await pane.find({ type: 'Text', text: /«n5»/ })).toBe(undefined)
+    await pane.press({ key: 'feed-more' })
+    expect(await pane.find({ type: 'Text', text: /«n0»/ })).not.toBe(undefined)
+  })
 
   kitTest('Russian strings render in the pane when the option says so', { timeoutMs: 30000, options: { language: 'ru' } }, async ($, on) => {
     mock.clock(on, { now: NOW })

@@ -151,6 +151,7 @@ peak memory at the end.
 | `--label <text>` | what the pane and the log call the job (default: the command) |
 | `--max-mem <GB>` | end the command's own process tree if it goes over this |
 | `--max-wait <min>` | give up after waiting this long (exit 75) |
+| `--note <text>` | a line for the feed, shown with the job's `queued` event |
 
 | Exit | |
 | --- | --- |
@@ -165,8 +166,13 @@ peak memory at the end.
 
 `runq.py status` shows what runs and what waits (and why), free commit, RAM and disks;
 `runq.py log --since 30m` (or `-n 50`, an ISO time, `--json`) shows the events: queued,
-started, finished, killed, failed, stale, cancelled, gave-up. The pane shows the same in a
-**Run queue** section while anything runs or waits, and for two hours after.
+waiting (and why, again whenever the reason changes), started, finished, killed, failed,
+stale, cancelled, gave-up, note. `runq.py note "<text>"` adds a line of the agent's own
+("D: is nearly full, clearing old scans"), so the feed also reads as a conversation about
+the machine; it is a log, nobody is notified. The pane shows the queue in a **Run queue**
+section while anything runs or waits, and for two hours after; **feed ↗** there (or
+`/load queue`) opens the feed as a pane of its own: the last 24 hours, newest first, one
+line per event: time, session, job, what happened and why.
 
 **What runq touches.** It reads other processes' memory only through the machine's totals.
 The only processes it ever ends are its own command's tree, and only with `--max-mem`. On

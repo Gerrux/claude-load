@@ -72,6 +72,16 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(starts(d), [])
         self.assertEqual(d['small'][0], {'kind': 'behind', 'by': 'big'})
 
+    def test_a_long_wait_held_by_a_tag_does_not_hold_memory_jobs_back(self):
+        # The big job waits for memory and for cargo-test: it cannot start when memory frees,
+        # so it must not stop a later job that fits.
+        cfg = CFG
+        r = job('r', 'running', mem=1, tags=['cargo-test'], curMB=GB)
+        big = job('big', mem=30, tags=['cargo-test'], queued=1)
+        small = job('small', mem=2, queued=2)
+        d = runq.plan([r, big, small], {'commitFreeMB': 20 * GB}, cfg, NOW + 10 * 60000)
+        self.assertEqual(starts(d), ['small'])
+
     def test_zero_memory_job_is_not_held_behind_a_memory_wait(self):
         big = job('big', mem=30, queued=1)
         tiny = job('tiny', mem=0, queued=2)
@@ -222,6 +232,24 @@ class RunTest(unittest.TestCase):
         for prev, nxt in zip(rows, rows[1:]):  # noqa: RUF007 (3.8 has no pairwise)
             self.assertGreaterEqual(nxt[1], prev[2])
 
+    def test_exclusive_job_is_seen_while_its_runq_rewrites_its_file(self):
+        # Review finding: a running job's runq rewrites its job file on every sample, outside the
+        # lock; a waiting runq that reads the folder during that os.replace skips the file
+        # (read_json -> None) and starts a second cargo-test job beside the first.
+        out = self.q.dir / 'stamps'
+        a = self.q.start('--mem', '0.1', '--tag', 'cargo-test', '--label', 'a', '--',
+                         *py(stamp_code(out, 'a', 6.0)), env={'RUNQ_SAMPLE': '0'})
+        end = time.time() + 20
+        while not any(j.get('state') == 'running' for j in self.q.jobs()):
+            self.assertLess(time.time(), end)
+            time.sleep(0.05)
+        b = self.q.start('--mem', '0.1', '--tag', 'cargo-test', '--label', 'b', '--',
+                         *py(stamp_code(out, 'b', 0.0)), env={'RUNQ_POLL': '0'})
+        a.communicate(timeout=60)
+        b.communicate(timeout=60)
+        rows = {r[0]: r for r in (json.loads(x) for x in out.read_text().splitlines())}
+        self.assertGreaterEqual(rows['b'][1], rows['a'][2], 'b started while a held cargo-test')
+
     def test_untagged_jobs_run_side_by_side(self):
         out = self.q.dir / 'stamps'
         procs = [self.q.start('--mem', '0.1', '--', *py(stamp_code(out, n, 1.5))) for n in ('a', 'b')]
@@ -255,6 +283,29 @@ class RunTest(unittest.TestCase):
         self.q.set_machine(14)
         p.communicate(timeout=30)
         self.assertEqual(p.returncode, 0)
+
+    def test_the_feed_says_why_a_job_waits_and_carries_notes(self):
+        self.q.set_machine(5)
+        p = self.q.start('--mem', '1', '--label', 'w', '--note', 'scan of plot  7,\nsecond try', '--', *py('pass'))
+        end = time.time() + 20
+        while 'waiting' not in [e['ev'] for e in self.q.events()]:
+            self.assertLess(time.time(), end)
+            time.sleep(0.05)
+        time.sleep(0.5)
+        self.q.set_machine(60)
+        p.communicate(timeout=30)
+        r = self.q.run('note', 'D: is nearly full, clearing old scans')
+        self.assertEqual(r.returncode, 0)
+        evs = self.q.events()
+        self.assertEqual([e['ev'] for e in evs], ['queued', 'waiting', 'started', 'finished', 'note'])
+        self.assertEqual(evs[0]['note'], 'scan of plot 7, second try')
+        self.assertEqual(evs[1]['reasons'][0]['kind'], 'mem')
+        self.assertRegex(evs[1]['hm'], r'^\d\d:\d\d$')
+        self.assertEqual(evs[-1]['text'], 'D: is nearly full, clearing old scans')
+        log = self.q.run('log').stdout
+        self.assertIn('needs 1.0 GB + 12.0 GB guard', log)
+        self.assertIn('D: is nearly full, clearing old scans', log)
+        self.assertEqual(self.q.run('note').returncode, runq.EXIT_USAGE)
 
     def test_max_wait_gives_up(self):
         self.q.set_machine(5)

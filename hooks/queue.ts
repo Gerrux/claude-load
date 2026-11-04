@@ -33,7 +33,15 @@ export type QueueReason =
 /** One line of `events.jsonl`. */
 export type QueueEvent = {
   ts: number
-  ev: 'queued' | 'started' | 'finished' | 'killed' | 'failed' | 'stale' | 'cancelled' | 'gave-up' | string
+  /** The local time of day runq wrote, `21:03`. */
+  hm?: string
+  ev: 'queued' | 'waiting' | 'started' | 'finished' | 'killed' | 'failed' | 'stale' | 'cancelled' | 'gave-up' | 'note' | string
+  /** `waiting`: why. */
+  reasons?: QueueReason[]
+  /** `queued`: the job's --note; `note`: the agent's line. */
+  note?: string
+  text?: string
+  hostSession?: string
   id?: string
   label?: string
   session?: string
@@ -96,17 +104,17 @@ export type GuardRule = { name: string; pattern: string; tag?: string; memGB?: n
 
 export const DEFAULT_RULES: GuardRule[] = [
   {
-    name: 'cargo test', pattern: String.raw`^cargo(\s+\+\S+)?\s+(test|nextest)\b`, tag: 'cargo-test', memGB: 8,
+    name: 'cargo test', pattern: String.raw`^cargo(\s+\+\S+)?\s+(test|nextest\s+run)\b(?!.*\s(--help|-h)(\s|$))`, tag: 'cargo-test', memGB: 8,
     hint: 'one cargo test per machine: the tests share temporary paths',
   },
   {
-    name: 'treegrow run', pattern: String.raw`^(\S*[\\/])?treegrow[\w.-]*(\.exe)?\s+(grow|scan|stand|forest)\b`, tag: 'treegrow', memGB: 16,
+    name: 'treegrow run', pattern: String.raw`^(\S*[\\/])?treegrow[\w.-]*(\.exe)?\s+(grow|scan|stand|forest)\b(?!.*\s(--help|-h)(\s|$))`, tag: 'treegrow', memGB: 16,
   },
   {
-    name: 'treegrow run', pattern: String.raw`^cargo(\s+\+\S+)?\s+run\b.*\s--\s+(grow|scan|stand|forest)\b`, tag: 'treegrow', memGB: 16,
+    name: 'treegrow run', pattern: String.raw`^cargo(\s+\+\S+)?\s+run\b.*\s--\s+(grow|scan|stand|forest)\b(?!.*\s(--help|-h)(\s|$))`, tag: 'treegrow', memGB: 16,
   },
   {
-    name: 'HELIOS++', pattern: String.raw`^(\S*[\\/])?(py)?helios[\w+.-]*(\.exe)?(\s|$)`, tag: 'helios', memGB: 24,
+    name: 'HELIOS++', pattern: String.raw`^(\S*[\\/])?(py)?helios[\w+.-]*(\.exe)?(?!\S)(?!.*\s(--help|-h|--version)(\s|$))`, tag: 'helios', memGB: 24,
     hint: 'HELIOS++ takes about 2 KB per triangle of the scene',
   },
 ]
@@ -117,13 +125,14 @@ export type GuardConfig = { roots?: string[]; rules?: GuardRule[] }
 /** One command of a line: where it starts in the line, and where its program word starts. */
 export type Segment = { start: number; head: number; text: string }
 
-const PREFIX = /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)|(?:(?:time|nohup|exec|command|env|builtin)\s+)|(?:timeout\s+(?:-\S+\s+)*\S+\s+)|(?:[({]\s*)|(?:!\s+))*/
+const PREFIX = /^(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)|(?:(?:time|nohup|exec|command|env|builtin|if|then|else|elif|do|while|until)\s+)|(?:timeout\s+(?:-\S+\s+)*\S+\s+)|(?:[({]\s*)|(?:!\s+))*/
 
 /**
  * The commands of a shell line (Bash or PowerShell), split at `;`, `&&`, `||`, `|`, a lone `&` and
- * newlines outside quotes. `2>&1`, `&>` and `>&` are redirections, not separators.
+ * newlines outside quotes. `2>&1`, `&>` and `>&` are redirections, not separators; heredoc and
+ * here-string bodies are text. In PowerShell (`ps`) a backslash is a path separator, not an escape.
  */
-export function segments(line: string): Segment[] {
+export function segments(line: string, ps = false): Segment[] {
   const out: Segment[] = []
   let start = 0
   let quote: string | null = null
@@ -139,17 +148,47 @@ export function segments(line: string): Segment[] {
     const skip = pre ? pre[0].length : 0
     if (body.trim()) out.push({ start: start + lead, head: head + skip, text: body.slice(skip).trimEnd() })
   }
+  // Bash heredocs open with `<<EOF` / `<<-'EOF'`; their bodies start after the line's end.
+  const heredocs: Array<{ delim: string; strip: boolean }> = []
   for (let i = 0; i < line.length; i++) {
     const c = line[i]
     if (quote) {
       if (c === quote) quote = null
-      else if (c === '\\' && quote === '"' && i + 1 < line.length) i++
+      else if (c === '\\' && quote === '"' && !ps && i + 1 < line.length) i++
+      continue
+    }
+    // A PowerShell here-string, `@'` or `@"` at a line's end up to `'@` / `"@` at a line's start:
+    // text, whatever quotes it holds.
+    if (c === '@' && (line[i + 1] === "'" || line[i + 1] === '"') && /^\r?\n/.test(line.slice(i + 2))) {
+      const close = line.indexOf(`\n${line[i + 1]}@`, i + 2)
+      i = close < 0 ? line.length : close + 2
       continue
     }
     if (c === '"' || c === "'") { quote = c; continue }
-    if (c === '\\' && i + 1 < line.length) { i++; continue }
+    if (c === '\\' && !ps && i + 1 < line.length) { i++; continue }
+    if (c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
+      const m = /^<<(-?)\s*(["']?)([A-Za-z_][\w.-]*)\2/.exec(line.slice(i))
+      if (m) { heredocs.push({ delim: m[3], strip: m[1] === '-' }); i += m[0].length - 1; continue }
+    }
     const two = line.slice(i, i + 2)
     if (two === '&&' || two === '||') { push(i); start = i + 2; i++; continue }
+    if (c === '\n' && heredocs.length) {
+      push(i)
+      // Skip each body up to its delimiter line.
+      let at = i + 1
+      for (const h of heredocs) {
+        while (at < line.length) {
+          const end = line.indexOf('\n', at)
+          const row = line.slice(at, end < 0 ? line.length : end).replace(/\r$/, '')
+          at = end < 0 ? line.length : end + 1
+          if ((h.strip ? row.replace(/^\t+/, '') : row) === h.delim) break
+        }
+      }
+      heredocs.length = 0
+      start = at
+      i = at - 1
+      continue
+    }
     if (c === ';' || c === '\n' || c === '|') { push(i); start = i + 1; continue }
     if (c === '&') {
       const prev = line[i - 1] ?? ''
@@ -181,11 +220,11 @@ export function isRunq(text: string): boolean {
 export type GuardHit = { rule: GuardRule; segment: Segment }
 
 /** The first heavy command of a line that is not run through runq, if any. */
-export function findHeavy(line: string, rules: GuardRule[]): GuardHit | null {
+export function findHeavy(line: string, rules: GuardRule[], ps = false): GuardHit | null {
   const compiled = rules.flatMap(rule => {
     try { return [{ rule, re: new RegExp(rule.pattern, 'i') }] } catch { return [] }
   })
-  for (const s of segments(line)) {
+  for (const s of segments(line, ps)) {
     if (isRunq(s.text)) continue
     const t = unquoteHead(s.text)
     for (const { rule, re } of compiled) if (re.test(t)) return { rule, segment: s }

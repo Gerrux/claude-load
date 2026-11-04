@@ -375,6 +375,8 @@ type State = {
   /** The session's folder: the guard is on by project. */
   cwd: string
   guard: { on: boolean; rules: GuardRule[]; checkedAt: number }
+  /** How many feed lines the feed pane shows; "earlier" adds a page. */
+  feedShown: number
 }
 
 export function freshState(): State {
@@ -382,7 +384,7 @@ export function freshState(): State {
     snap: null, selfId: null, band: 'auto', filter: 'all', group: 'sessions', sort: 'cpu', showAll: false,
     expanded: new Set(), confirm: null, platform: 'other', home: '', sep: '/', stateDir: '', script: '',
     lastWanted: 0, lastSpawn: 0, spawns: 0, replaces: 0, timer: null, posix: freshMemory(), cores: 0, memBytes: 0, cwdCache: new Map(), sampling: false,
-    queueDir: '', queue: { jobs: [], events: [], machine: null, eventsSize: -1 }, cwd: '', guard: { on: false, rules: DEFAULT_RULES, checkedAt: 0 },
+    queueDir: '', queue: { jobs: [], events: [], machine: null, eventsSize: -1 }, cwd: '', guard: { on: false, rules: DEFAULT_RULES, checkedAt: 0 }, feedShown: 60,
   }
 }
 
@@ -761,6 +763,11 @@ async function saveView($: EngineInterface, st: State) {
 
 /** How long the queue section shows the last events once nothing runs or waits. */
 const QUEUE_RECENT_MS = 2 * 3600 * 1000
+/** The feed pane: a day of events, newest first, a page at a time. */
+const QUEUE_PANE = 'claude-load-queue'
+const FEED_MS = 24 * 3600 * 1000
+const FEED_MAX = 3000
+const FEED_PAGE = 60
 const GUARD_RECHECK_MS = 30000
 
 /** What runq wrote: the jobs, the last events (re-read when the log grows) and its last reading. */
@@ -777,7 +784,7 @@ async function readQueue($: EngineInterface, st: State) {
   const log = entries.find(f => f.name === 'events.jsonl')
   if (log && log.size !== st.queue.eventsSize) {
     try {
-      st.queue.events = parseEvents(String(await $.fs.read(at('events.jsonl'))), 12)
+      st.queue.events = parseEvents(String(await $.fs.read(at('events.jsonl'))), FEED_MAX)
       st.queue.eventsSize = log.size
     } catch {
       // Being trimmed: next tick.
@@ -788,12 +795,14 @@ async function readQueue($: EngineInterface, st: State) {
   try {
     for (const f of await $.fs.list(at('jobs'))) {
       if (!f.name.endsWith('.json')) continue
+      let j: QueueJob | null = null
       try {
-        const j = parseJob(String(await $.fs.read(`${at('jobs')}${st.sep}${f.name}`)))
-        if (j) jobs.push(j)
+        j = parseJob(String(await $.fs.read(`${at('jobs')}${st.sep}${f.name}`)))
       } catch {
-        // Removed or being replaced: next tick.
+        // Being replaced by its runq: the last reading stands, so the row does not flicker.
+        j = st.queue.jobs.find(x => `${x.id}.json` === f.name) ?? null
       }
+      if (j) jobs.push(j)
     }
   } catch {
     // No jobs folder yet.
@@ -853,7 +862,7 @@ async function guardCheck($: EngineInterface, st: State, command: string, ps: bo
   const now = await $.clock.now()
   if (now - st.guard.checkedAt >= GUARD_RECHECK_MS) await refreshGuard($, st, now)
   if (!st.guard.on) return null
-  const hit = findHeavy(command, st.guard.rules)
+  const hit = findHeavy(command, st.guard.rules, ps)
   return hit ? denyText(command, hit, runqCommand(st.queueDir, st.platform), ps) : null
 }
 
@@ -909,15 +918,55 @@ export function figuresText(f: QueueFigures): string {
   ].filter(Boolean).join(' · ')
 }
 
-export function eventText(e: QueueEvent, now: number): string {
+/** What happened, in words: "waiting 6 min: cargo-test is held by …". */
+export function eventPhrase(e: QueueEvent): string {
   const t = tr()
-  const bits = [t.queueAgo(durText(now - e.ts)), e.label ?? '', t.queueEvent(e.ev)]
-  if (e.exit != null) bits.push(t.queueExit(e.exit))
-  if (e.waitS != null && e.ev !== 'queued') bits.push(t.queueWaited(durText(e.waitS * 1000)))
-  if (e.runS != null) bits.push(t.queueRan(durText(e.runS * 1000)))
-  if (e.peakMB != null) bits.push(t.queuePeak(fmtMem(e.peakMB)))
-  if (e.error) bits.push(e.error.slice(0, 120))
-  return bits.filter(Boolean).join(' · ')
+  const d = (s?: number) => (s != null && s >= 1 ? durText(s * 1000) : '')
+  const extra: string[] = []
+  let head: string
+  switch (e.ev) {
+    case 'queued': head = t.feedQueued(fmtMem(e.memMB ?? 0)); break
+    case 'waiting': head = t.feedWaiting(d(e.waitS), (e.reasons ?? []).map(reasonText).join('; ')); break
+    case 'started': head = t.feedStarted(d(e.waitS)); break
+    case 'note': head = ''; break
+    case 'gave-up': head = t.queueEvent(e.ev); if (e.waitS != null) extra.push(t.queueWaited(durText(e.waitS * 1000))); break
+    default: head = t.queueEvent(e.ev)
+  }
+  if (e.exit != null) extra.push(t.queueExit(e.exit))
+  if (e.runS != null) extra.push(t.queueRan(durText(e.runS * 1000)))
+  if (e.peakMB != null) extra.push(t.queuePeak(fmtMem(e.peakMB)))
+  if (e.error) extra.push(e.error.slice(0, 160))
+  const said = e.text ?? e.note
+  return [head, ...extra, said ? `«${said}»` : ''].filter(Boolean).join(' · ')
+}
+
+/** Who: the session's name as runq or the snapshot knows it. */
+function eventWho(e: QueueEvent, snap: Snapshot | null): string {
+  return jobSession({ id: e.id ?? '', label: '', state: 'running', queuedAt: 0, session: e.session, hostSession: e.hostSession, sessionName: e.sessionName }, snap)
+}
+
+/** One line of the feed: "21:03  treegrow-f8 · cargo test · waiting 6 min: …". */
+export function eventText(e: QueueEvent, now: number, snap: Snapshot | null = null): string {
+  const when = e.hm ?? tr().queueAgo(durText(now - e.ts))
+  return `${when}  ${[eventWho(e, snap), e.label ?? '', eventPhrase(e)].filter(Boolean).join(' · ')}`
+}
+
+/** How a feed line is drawn: trouble in warning, agents' own lines in Claude's color, the rest dim. */
+function feedTone(e: QueueEvent): { color?: 'warning' | 'claude'; dimColor?: boolean } {
+  if (e.ev === 'killed' || e.ev === 'failed' || e.ev === 'stale') return { color: 'warning' }
+  if (e.ev === 'note') return { color: 'claude' }
+  return { dimColor: e.ev !== 'waiting' && e.ev !== 'started' }
+}
+
+async function openFeed($: EngineInterface, st: State) {
+  st.feedShown = FEED_PAGE
+  await $.ui.open({ id: QUEUE_PANE, title: tr().queuePaneTitle })
+  $.ui.invalidate('ui.render')
+}
+
+/** The feed: the last day, newest first. */
+export function feedEvents(events: QueueEvent[], now: number): QueueEvent[] {
+  return events.filter(e => now - e.ts < FEED_MS).reverse()
 }
 
 /** Whether the pane shows the queue: something runs or waits, or happened in the last two hours. */
@@ -939,7 +988,7 @@ export function queueReport(q: State['queue'], snap: Snapshot | null, now: numbe
       `${j.reasons?.length ? ' · ' + j.reasons.map(reasonText).join('; ') : ''}`)
   })
   if (!running.length && !waiting.length) lines.push(t.queueEmpty)
-  for (const e of q.events.slice(-3).reverse()) lines.push(`  ${eventText(e, now)}`)
+  for (const e of q.events.slice(-3).reverse()) lines.push(`  ${eventText(e, now, snap)}`)
   return lines
 }
 
@@ -985,7 +1034,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'load',
       description: tr().commandDescription,
-      argumentHint: '[all | band on|off|auto]',
+      argumentHint: '[all | queue | band on|off|auto]',
       immediate: true,
     })
     st.timer?.cancel()
@@ -1023,6 +1072,13 @@ export const register: Register = (on, options) => {
       $.ui.invalidate('ui.render')
       return { text: t.bandSet(mode) }
     }
+    if (words[0] === 'queue') {
+      await tick($, st)
+      await openFeed($, st)
+      const now = await $.clock.now()
+      const feed = feedEvents(st.queue.events, now)
+      return { text: [...queueReport(st.queue, st.snap, now).slice(1), ...feed.slice(0, 20).map(ev => eventText(ev, now, st.snap))].join('\n') || t.feedEmpty }
+    }
     st.showAll = words[0] === 'all'
     await tick($, st)
     await $.ui.open({ id: PANE, title: t.paneTitle })
@@ -1030,6 +1086,45 @@ export const register: Register = (on, options) => {
     if (!st.snap) return { text: isBlocked(st) ? t.samplerBlocked : t.samplerStarting }
     const now = await $.clock.now()
     return { text: [textReport(buildView(st.snap, st.selfId, now, st.sort)), ...queueReport(st.queue, st.snap, now)].join('\n') }
+  })
+
+  // The feed: the queue's last day as a log people and agents read, newest first.
+  on('ui.render', { component: 'Pane', requestId: QUEUE_PANE }, async ($, e) => {
+    const t = tr()
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const now = await $.clock.now()
+    const q = st.queue
+    const { running, waiting } = sortJobs(q.jobs)
+    const feed = feedEvents(q.events, now)
+    const shown = feed.slice(0, st.feedShown)
+    const width = (e.props.bodyColumns ?? 0) > PANE_MAX ? PANE_MAX : undefined
+    return (
+      <Box flexDirection="column" width={width}>
+        <Box borderStyle="round" borderColor="subtle" paddingX={1} flexDirection="column">
+          <Text bold>{t.queueSummary(running.length, waiting.length)}</Text>
+          <Text dimColor wrap="truncate-end">{figuresText(queueFigures(st.snap, q.machine, now))}</Text>
+          {[...running, ...waiting].map((j, i) => (
+            <Text key={`fj${i}`} color={j.state === 'waiting' ? 'warning' : undefined} wrap="truncate-end">
+              {j.state === 'running' ? '▶' : '⏸'} {[jobSession(j, st.snap), j.label,
+                j.state === 'running'
+                  ? t.queueRun(fmtMem(j.memMB ?? 0), fmtMem(j.curMB ?? 0), fmtMem(j.peakMB ?? 0), durText(now - (j.startedAt ?? now)))
+                  : t.feedWaiting(durText(now - j.queuedAt), (j.reasons ?? []).map(reasonText).join('; '))].filter(Boolean).join(' · ')}
+            </Text>
+          ))}
+        </Box>
+        <Box marginTop={1}><Text dimColor>{t.feedHeader}</Text></Box>
+        {!feed.length && <Box marginTop={1}><Text dimColor>{t.feedEmpty}</Text></Box>}
+        {shown.map((ev, i) => (
+          <Text key={`f${i}`} {...feedTone(ev)} wrap="wrap">{eventText(ev, now, st.snap)}</Text>
+        ))}
+        {feed.length > shown.length && (
+          <Box marginTop={1}>
+            <Button key="feed-more" label={t.feedMore(feed.length - shown.length)} plain dimColor
+              onPress={() => { st.feedShown += FEED_PAGE; $.ui.invalidate('ui.render') }} />
+          </Box>
+        )}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -1365,11 +1460,13 @@ export const register: Register = (on, options) => {
         {!q.jobs.length && <Box paddingLeft={Svg ? 3 : 2}><Text dimColor>{t.queueEmpty}</Text></Box>}
         {q.events.length > 0 && (
           <Box flexDirection="column" paddingLeft={Svg ? 3 : 2} marginTop={1}>
-            <Text dimColor bold>{t.queueRecent}</Text>
+            <Box gap={1} alignItems="center">
+              <Text dimColor bold>{t.queueRecent}</Text>
+              <Box flexGrow={1} />
+              <Button key="queue-feed" label={t.queueLogButton} plain dimColor onPress={() => { void openFeed($, st) }} />
+            </Box>
             {q.events.slice(-5).reverse().map((ev, i) => (
-              <Text key={`qe${i}`} dimColor={ev.ev !== 'killed' && ev.ev !== 'failed'} color={ev.ev === 'killed' || ev.ev === 'failed' ? 'warning' : undefined} wrap="truncate-end">
-                {eventText(ev, now)}
-              </Text>
+              <Text key={`qe${i}`} {...feedTone(ev)} wrap="truncate-end">{eventText(ev, now, snap)}</Text>
             ))}
           </Box>
         )}
