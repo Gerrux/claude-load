@@ -73,6 +73,20 @@ public static class LoadCwd {
     } finally { CloseHandle(h); }
   }
 }
+public static class LoadPerf {
+  [StructLayout(LayoutKind.Sequential)] struct PI {
+    public int cb; public UIntPtr CommitTotal, CommitLimit, CommitPeak, PhysicalTotal, PhysicalAvailable, SystemCache,
+      KernelTotal, KernelPaged, KernelNonpaged, PageSize; public int Handles, Processes, Threads;
+  }
+  [DllImport("kernel32.dll", EntryPoint = "K32GetPerformanceInfo")] static extern bool GetPerformanceInfo(ref PI pi, int cb);
+  // Committed and the commit limit in MB: what runq gates on (RAM plus the page file).
+  public static long[] Commit() {
+    var pi = new PI(); pi.cb = Marshal.SizeOf(pi);
+    if (!GetPerformanceInfo(ref pi, pi.cb)) return null;
+    ulong page = pi.PageSize.ToUInt64();
+    return new long[] { (long)(pi.CommitTotal.ToUInt64() * page / 1048576), (long)(pi.CommitLimit.ToUInt64() * page / 1048576) };
+  }
+}
 '@
 Add-Type -AssemblyName Microsoft.VisualBasic
 $computer = New-Object Microsoft.VisualBasic.Devices.ComputerInfo
@@ -366,14 +380,23 @@ while ($true) {
     elseif ($k.StartsWith('o:')) { $histOut.orphans[$k.Substring(2)] = $vals }
   }
 
+  # For the run queue's figures in the pane: commit and the fixed drives' free space.
+  $commit = [LoadPerf]::Commit()
+  $disks = @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } | ForEach-Object {
+    [ordered]@{ name = $_.Name.TrimEnd('\'); freeMB = [long]($_.AvailableFreeSpace / 1MB); totalMB = [long]($_.TotalSize / 1MB) } })
   $snapshot = [ordered]@{
-    v = 3  # the snapshot format (hooks/types.ts); 2 adds `started` to top rows, 3 adds outside `top` and memory history
+    # the snapshot format (hooks/types.ts); 2 adds `started` to top rows, 3 adds outside `top` and memory
+    # history, 4 adds commit and disks
+    v = 4
     ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     intervalMs = $IntervalMs
     cores = $cores
     cpu = (Round1 ([math]::Min(100, $total)))
     memTotalMB = [int]($computer.TotalPhysicalMemory / 1MB)
     memUsedMB = [int]($memUsed / 1MB)
+    commitUsedMB = $(if ($commit) { $commit[0] } else { $null })
+    commitLimitMB = $(if ($commit) { $commit[1] } else { $null })
+    disks = $disks
     warm = ($dtMs -gt 0)
     hist = $histOut
     sessions = @($sessions.Values | Sort-Object { $_.cpu } -Descending | ForEach-Object {

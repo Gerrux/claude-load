@@ -138,7 +138,7 @@ describe('macOS/Linux glue', () => {
     expect(snap.orphans[0].top[0]).toMatchObject({ name: 'python3', pid: 2000, started: 'Mon Nov 2 09:00:00 2026' })
     expect(st.envs.length).toBe(2)
     expect(st.envs.every(env => env?.LC_TIME === 'C' && env?.LC_ALL === '' && env?.TZ === 'UTC')).toBe(true)
-    expect(snap.v).toBe(3)
+    expect(snap.v).toBe(4)
     expect(snap.outside.find(x => x.name === 'firefox')!.top).toEqual([
       expect.objectContaining({ name: 'firefox', pid: 3000, started: 'Mon Nov 2 07:00:00 2026' }),
     ])

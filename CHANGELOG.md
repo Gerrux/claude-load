@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.0
+
+A run queue for heavy runs, shared by every session on the machine.
+
+- `runq` (`runq/runq.py`, Python 3.8+): a job declares its peak memory, exclusive tags and
+  disk needs, and waits first come first served until free commit covers it plus a 12 GB
+  guard, no job holds its exclusive tag (`cargo-test` by default) and its drives have room.
+  Then it runs the command with the terminal's handles and exits with its code. On Windows
+  the command runs in a Job Object: `--max-mem` ends exactly its own tree, and a killed runq
+  takes its command along. `runq status`, `runq log --since 30m`. The mod copies runq to
+  `~/.claude/state/queue/runq.py` at session start.
+- The guard: in a project that opts in (`env.CLAUDE_LOAD_RUNQ_GUARD` in its settings, or
+  `guard.roots` in the queue's `config.json`), a Bash or PowerShell command that starts a
+  heavy run outside runq is denied with the runq line to run instead.
+- The pane shows the run queue while anything runs or waits: running jobs with their
+  memory and time, waiting jobs and why, free commit, RAM and disks, the last events. `/load`
+  prints it too.
+- Snapshot format 4 (Windows): commit and fixed drives' free space. A 1.2.0 session
+  replaces an older sampler as before.
+
 ## 1.1.0
 
 A tidier pane and more of what is behind each number.

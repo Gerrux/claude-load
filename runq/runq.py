@@ -34,6 +34,10 @@ import sys
 import time
 from pathlib import Path
 
+# Raised with every change: the claude-load mod copies this file to the queue folder and never
+# replaces a newer copy with an older one.
+__version__ = 1
+
 WIN = os.name == 'nt'
 MB = 1024 * 1024
 
