@@ -79,6 +79,7 @@ Gerenciador de Tarefas mostra um paredão de `node` e `claude`. O claude-load di
 | 🧩 **Todo o resto** | outros processos agrupados por nome (`chrome ×31`), para você ver se o problema é mesmo o Claude |
 | 🔎 **Filtros e grupos** | Todos · Ativos · Pesados · Órfãos · Esta janela; por sessão, por repositório (com os worktrees incorporados), por processo; ordenação por CPU ou memória |
 | ✻ **Resolver com o Claude** | um botão: a skill `sessions-triage` incluída classifica as sessões ociosas e os órfãos, pergunta uma única vez e arquiva ou encerra somente o que você aprovar |
+| ⏳ **Fila de execuções** | o `runq` faz as execuções pesadas de todas as sessões se revezarem na máquina conforme a memória, as tags exclusivas e o disco; um guardião opcional as envia para lá |
 | 🚦 **Linha de carga** | acima do prompt sob carga alta (CPU ≥ 50% ou memória ≥ 85%), com os maiores consumidores |
 | 🌍 **8 idiomas** | English, Русский, Deutsch, Español, Français, Português, 中文, 日本語 |
 
@@ -107,6 +108,110 @@ O filtro, o agrupamento e a ordenação são lembrados entre as sessões.
 **Idioma:** a opção `language` do plugin (`/config`) aceita `auto`, `en`, `ru`, `de`,
 `es`, `fr`, `pt`, `zh` ou `ja`. `auto` segue a configuração `language` do Claude Code,
 depois a localidade do sistema e, por fim, o inglês.
+
+## Fila de execuções (runq)
+
+Várias sessões em uma mesma máquina iniciam, cada uma, uma execução que consome muita
+memória (um conjunto de testes, uma simulação, uma compilação grande), e a máquina fica sem
+memória, ou duas execuções que compartilham caminhos temporários atrapalham uma à outra. O
+`runq` faz com que se revezem sozinhas: cada comando pesado espera em uma única fila para a
+máquina inteira até haver espaço para ele e então roda normalmente.
+
+```bash
+python "$HOME/.claude/state/queue/runq.py" --mem 20 --tag helios --label "scan 1 ha" -- ./target/release/treegrow-cli scan --plot 1ha
+```
+
+A mesma linha funciona no Git Bash e no PowerShell (`$HOME` é expandido nos dois; em outros
+lugares use `python3`). Exige Python 3.8 ou posterior. O mod copia o `runq.py` para
+`~/.claude/state/queue/` a cada início de sessão, de modo que o caminho continua o mesmo
+entre atualizações do plugin.
+
+Um job espera, por ordem de chegada, até que tudo isto seja verdade:
+
+- **memória:** o commit livre (o que o Windows ainda pode prometer: RAM mais arquivo de
+  paginação) cobre o `--mem` do job mais uma margem, 12 GB por padrão. Os jobs em execução
+  contam com o que declararam e ainda não ocuparam, então dois jobs admitidos com um segundo
+  de diferença não veem ambos a mesma memória livre. Um job menor pode passar na frente de
+  um maior que espera memória; depois que o maior esperou 5 minutos, nada que precise de
+  memória passa na frente dele.
+- **tags exclusivas:** nenhum job em execução, nem nenhum job enfileirado antes, tem a mesma
+  tag exclusiva. `cargo-test` é exclusiva por padrão: um `cargo test` por máquina.
+- **disco:** cada unidade de `--disk D:=<GB>` tem esse espaço livre, menos o que os jobs em
+  execução declararam para ela e ainda não gravaram.
+
+Então o runq executa o comando como seu próprio filho, com o stdin, o stdout e o stderr do
+terminal, e termina com o código de saída do comando. As linhas do próprio runq vão para o
+stderr e começam com `runq:`: uma linha de progresso a cada 30 s enquanto espera (por que
+espera) e, no fim, a saída, o tempo de execução e o pico de memória.
+
+| Opção | |
+| --- | --- |
+| `--mem <GB>` | o pico de memória esperado da execução (obrigatório; `0` para uma execução que só precisa de uma tag) |
+| `--tag <name>` | repetível; exclusiva se estiver em `exclusiveTags` |
+| `--disk D:=<GB>` | repetível; espaço livre que uma unidade deve ter (um caminho no macOS/Linux) |
+| `--label <text>` | como o painel e o log chamam o job (padrão: o comando) |
+| `--max-mem <GB>` | encerra a árvore de processos do próprio comando se ele passar desse valor |
+| `--max-wait <min>` | desiste depois de esperar tanto (saída 75) |
+
+| Saída | |
+| --- | --- |
+| a do comando | ele rodou |
+| 2 | erro de uso |
+| 3 | `--mem` mais a margem excede o limite de commit da máquina: nunca poderia iniciar |
+| 75 | o `--max-wait` esgotou |
+| 126 | o comando não pôde ser iniciado (por exemplo, um `.exe` recém-compilado que o Microsoft Defender bloqueia: `Permission denied`); informado uma vez, nunca repetido |
+| 127 | comando não encontrado |
+| 130 | cancelado (Ctrl+C) durante a espera |
+| 137 | encerrado pelo seu próprio `--max-mem` |
+
+`runq.py status` mostra o que roda e o que espera (e por quê), o commit livre, a RAM e os
+discos; `runq.py log --since 30m` (ou `-n 50`, um horário ISO, `--json`) mostra os eventos:
+queued, started, finished, killed, failed, stale, cancelled, gave-up. O painel mostra o
+mesmo em uma seção **Fila de execuções** enquanto algo roda ou espera, e por duas horas
+depois.
+
+**O que o runq toca.** Ele lê a memória de outros processos apenas pelos totais da máquina.
+Os únicos processos que ele encerra são a árvore do seu próprio comando, e só com
+`--max-mem`. No Windows, o comando roda em um Job Object: sua árvore são exatamente os
+membros do job, cada um é verificado como pertencente ao job antes de ser encerrado, e um
+runq que é ele mesmo morto leva seu comando junto em vez de deixá-lo rodando sem
+contabilização. Onde não é possível criar um job (e no macOS/Linux), a árvore é percorrida
+pelo PID do pai, e o horário de início de cada processo é verificado antes de ele ser
+encerrado. Um job cujo runq e comando sumiram (uma falha, uma reinicialização) é descartado
+por PID e horário de início; um comando que continua rodando depois que seu runq morreu
+mantém sua vaga e suas tags. As decisões são tomadas sob um bloqueio de arquivo do SO, que o
+SO libera quando seu detentor morre.
+
+**Configurações:** `~/.claude/state/queue/config.json`, todas opcionais:
+
+```json
+{
+  "guardGB": 12,
+  "exclusiveTags": ["cargo-test"],
+  "fairAfterMin": 5,
+  "guard": {
+    "roots": ["C:/Users/me/garage/treegrow", "D:/work/treegrow-*"],
+    "rules": [{ "name": "cargo test", "pattern": "^cargo(\\s+\\+\\S+)?\\s+(test|nextest)\\b", "tag": "cargo-test", "memGB": 8 }]
+  }
+}
+```
+
+### O guardião: comandos pesados somente pelo runq
+
+Em um projeto que o ativa, um comando de Bash ou PowerShell que inicia uma execução pesada
+fora do runq é negado, e o agente recebe no lugar a linha exata do runq que deve executar
+(com o seu `cd …&&` e o seu `| tail` mantidos). O mod nunca reescreve nem executa um comando
+por conta própria. Ative-o para um projeto no `.claude/settings.json` dele (compartilhado,
+então todos os seus worktrees o têm) ou em `.claude/settings.local.json`:
+
+```json
+{ "env": { "CLAUDE_LOAD_RUNQ_GUARD": "1" } }
+```
+
+ou para pastas, worktrees incluídos, com `guard.roots` em `config.json` (`*` representa uma
+parte do caminho); `"0"` nas configurações de um projeto o desativa ali. São pesados por
+padrão: `cargo test` / `cargo nextest`, `treegrow*` `grow|scan|stand|forest` (um executável
+ou `cargo run … -- <verb>`) e `helios*`; `guard.rules` substitui a lista.
 
 ## Como funciona
 
@@ -149,6 +254,7 @@ de verdade. Relatos e correções são bem-vindos.
 ```bash
 claude plugin validate .
 claude plugin test .
+python -m unittest discover -s runq -v
 claude --plugin-dir .
 ```
 
