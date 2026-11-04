@@ -87,6 +87,45 @@ export type Dict = {
   memOf: (used: string, total: string) => string
   reportOrphans: string
   reportOutside: string
+
+  /** The run queue (runq): heavy runs of every session take turns on the machine. */
+  sectionQueue: string
+  queueNote: string
+  /** Free commit: what the machine can still promise (RAM plus page file). */
+  queueCommit: (free: string, limit: string) => string
+  queueRam: (free: string) => string
+  queueDisk: (drive: string, free: string) => string
+  /** A running job: declared memory, private memory now, its peak, time since start. */
+  queueRun: (mem: string, now: string, peak: string, elapsed: string) => string
+  queueWait: (mem: string, waited: string) => string
+  queueWhyTag: (tag: string, by: string) => string
+  queueWhyMem: (need: string, guard: string, free: string) => string
+  queueWhyBehind: (by: string) => string
+  queueWhyDisk: (need: string, drive: string, free: string) => string
+  /** Its runq died while the command runs on. */
+  queueOrphaned: string
+  queueRecent: string
+  /** queued, started, finished, killed (by its own --max-mem), failed, stale, cancelled, gave-up */
+  queueEvent: (ev: string) => string
+  queueExit: (code: number) => string
+  queueWaited: (d: string) => string
+  queueRan: (d: string) => string
+  queuePeak: (mem: string) => string
+  queueEmpty: string
+  dur: (h: number, m: number, s: number) => string
+  /** A duration (`dur`) since an event: "12 min ago". */
+  queueAgo: (d: string) => string
+  /** The feed: the queue's events as a log people and agents read; its own pane. */
+  queuePaneTitle: string
+  queueLogButton: string
+  queueSummary: (running: number, waiting: number) => string
+  feedHeader: string
+  feedEmpty: string
+  feedMore: (n: number) => string
+  feedQueued: (mem: string) => string
+  /** `d` empty right after queueing. */
+  feedWaiting: (d: string, why: string) => string
+  feedStarted: (d: string) => string
 }
 
 const en: Dict = {
@@ -162,6 +201,40 @@ const en: Dict = {
   memOf: (used, total) => `${used} of ${total}`,
   reportOrphans: 'Orphans — parent gone, process still running',
   reportOutside: 'Outside sessions:',
+
+  sectionQueue: 'Run queue',
+  queueNote: 'heavy runs of all sessions take turns (runq)',
+  queueCommit: (free, limit) => `free commit ${free} of ${limit}`,
+  queueRam: free => `RAM free ${free}`,
+  queueDisk: (drive, free) => `${drive} ${free} free`,
+  queueRun: (mem, now, peak, elapsed) => `declared ${mem} · now ${now} · peak ${peak} · ${elapsed}`,
+  queueWait: (mem, waited) => `declared ${mem} · waiting ${waited}`,
+  queueWhyTag: (tag, by) => `${tag} is held by ${by}`,
+  queueWhyMem: (need, guard, free) => `needs ${need} + ${guard} guard, ${free} free`,
+  queueWhyBehind: by => `behind ${by}, which waits for memory`,
+  queueWhyDisk: (need, drive, free) => `needs ${need} on ${drive}, ${free} free`,
+  queueOrphaned: 'its runq is gone',
+  queueRecent: 'Recent',
+  queueEvent: ev => ({
+    queued: 'queued', started: 'started', finished: 'finished', killed: 'ended by its --max-mem', failed: 'failed to start',
+    stale: 'dropped: its runq is gone', cancelled: 'cancelled', 'gave-up': 'gave up waiting',
+  } as Record<string, string>)[ev] ?? ev,
+  queueExit: code => `exit ${code}`,
+  queueWaited: d => `waited ${d}`,
+  queueRan: d => `ran ${d}`,
+  queuePeak: mem => `peak ${mem}`,
+  queueEmpty: 'No heavy runs right now.',
+  dur: (h, m, s) => h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`,
+  queueAgo: d => `${d} ago`,
+  queuePaneTitle: 'Machine queue',
+  queueLogButton: 'feed ↗',
+  queueSummary: (running, waiting) => `${running} running · ${waiting} waiting`,
+  feedHeader: 'Last 24 hours, newest first · agents add a line with runq note "<text>"',
+  feedEmpty: 'Nothing in the last 24 hours.',
+  feedMore: n => `+ ${n} earlier`,
+  feedQueued: mem => `queued, declared ${mem}`,
+  feedWaiting: (d, why) => d ? `waiting ${d}: ${why}` : `waiting: ${why}`,
+  feedStarted: d => d ? `started after ${d} in the queue` : 'started',
 }
 
 const ru: Dict = {
@@ -237,6 +310,40 @@ const ru: Dict = {
   memOf: (used, total) => `${used} из ${total}`,
   reportOrphans: 'Сироты — родитель умер, процесс живёт',
   reportOutside: 'Вне сессий:',
+
+  sectionQueue: 'Очередь запусков',
+  queueNote: 'тяжёлые запуски всех сессий идут по очереди (runq)',
+  queueCommit: (free, limit) => `свободно commit ${free} из ${limit}`,
+  queueRam: free => `свободно RAM ${free}`,
+  queueDisk: (drive, free) => `${drive} свободно ${free}`,
+  queueRun: (mem, now, peak, elapsed) => `заявлено ${mem} · сейчас ${now} · пик ${peak} · ${elapsed}`,
+  queueWait: (mem, waited) => `заявлено ${mem} · ждёт ${waited}`,
+  queueWhyTag: (tag, by) => `занят тег ${tag} (${by})`,
+  queueWhyMem: (need, guard, free) => `нужно ${need} + ${guard} запаса, свободно ${free}`,
+  queueWhyBehind: by => `за ${by}, который ждёт памяти`,
+  queueWhyDisk: (need, drive, free) => `нужно ${need} на ${drive}, свободно ${free}`,
+  queueOrphaned: 'его runq уже нет',
+  queueRecent: 'Недавно',
+  queueEvent: ev => ({
+    queued: 'в очереди', started: 'запущен', finished: 'завершён', killed: 'остановлен своим --max-mem', failed: 'не запустился',
+    stale: 'снят: его runq уже нет', cancelled: 'отменён', 'gave-up': 'не дождался',
+  } as Record<string, string>)[ev] ?? ev,
+  queueExit: code => `код ${code}`,
+  queueWaited: d => `ждал ${d}`,
+  queueRan: d => `шёл ${d}`,
+  queuePeak: mem => `пик ${mem}`,
+  queueEmpty: 'Тяжёлых запусков сейчас нет.',
+  dur: (h, m, s) => h ? `${h} ч ${m} мин` : m ? `${m} мин` : `${s} с`,
+  queueAgo: d => `${d} назад`,
+  queuePaneTitle: 'Очередь машины',
+  queueLogButton: 'журнал ↗',
+  queueSummary: (running, waiting) => `идут: ${running} · ждут: ${waiting}`,
+  feedHeader: 'За сутки, новые сверху · агент добавляет строку: runq note "<текст>"',
+  feedEmpty: 'За сутки ничего не было.',
+  feedMore: n => `+ ещё ${n} раньше`,
+  feedQueued: mem => `в очереди, заявлено ${mem}`,
+  feedWaiting: (d, why) => d ? `ждёт ${d}: ${why}` : `ждёт: ${why}`,
+  feedStarted: d => d ? `запущен после ${d} в очереди` : 'запущен',
 }
 
 const de: Dict = {
@@ -312,6 +419,40 @@ const de: Dict = {
   memOf: (used, total) => `${used} von ${total}`,
   reportOrphans: 'Verwaist — Elternprozess beendet, Prozess läuft noch',
   reportOutside: 'Außerhalb von Sitzungen:',
+
+  sectionQueue: 'Ausführungswarteschlange',
+  queueNote: 'schwere Läufe aller Sitzungen kommen nacheinander dran (runq)',
+  queueCommit: (free, limit) => `Commit frei ${free} von ${limit}`,
+  queueRam: free => `RAM frei ${free}`,
+  queueDisk: (drive, free) => `${drive} ${free} frei`,
+  queueRun: (mem, now, peak, elapsed) => `angemeldet ${mem} · jetzt ${now} · Spitze ${peak} · ${elapsed}`,
+  queueWait: (mem, waited) => `angemeldet ${mem} · wartet ${waited}`,
+  queueWhyTag: (tag, by) => `${tag} ist belegt durch ${by}`,
+  queueWhyMem: (need, guard, free) => `braucht ${need} + ${guard} Reserve, ${free} frei`,
+  queueWhyBehind: by => `hinter ${by}, der auf Speicher wartet`,
+  queueWhyDisk: (need, drive, free) => `braucht ${need} auf ${drive}, ${free} frei`,
+  queueOrphaned: 'sein runq ist weg',
+  queueRecent: 'Zuletzt',
+  queueEvent: ev => ({
+    queued: 'eingereiht', started: 'gestartet', finished: 'beendet', killed: 'durch sein --max-mem beendet', failed: 'Start fehlgeschlagen',
+    stale: 'entfernt: sein runq ist weg', cancelled: 'abgebrochen', 'gave-up': 'Warten aufgegeben',
+  } as Record<string, string>)[ev] ?? ev,
+  queueExit: code => `Exit ${code}`,
+  queueWaited: d => `wartete ${d}`,
+  queueRan: d => `lief ${d}`,
+  queuePeak: mem => `Spitze ${mem}`,
+  queueEmpty: 'Gerade keine schweren Läufe.',
+  dur: (h, m, s) => h ? `${h} Std. ${m} Min.` : m ? `${m} Min.` : `${s} s`,
+  queueAgo: d => `vor ${d}`,
+  queuePaneTitle: 'Warteschlange der Maschine',
+  queueLogButton: 'Protokoll ↗',
+  queueSummary: (running, waiting) => `${running} laufen · ${waiting} warten`,
+  feedHeader: 'Letzte 24 Stunden, neueste zuerst · Agenten fügen eine Zeile hinzu mit runq note "<Text>"',
+  feedEmpty: 'In den letzten 24 Stunden nichts.',
+  feedMore: n => `+ ${n} früher`,
+  feedQueued: mem => `eingereiht, angemeldet ${mem}`,
+  feedWaiting: (d, why) => d ? `wartet ${d}: ${why}` : `wartet: ${why}`,
+  feedStarted: d => d ? `gestartet nach ${d} in der Warteschlange` : 'gestartet',
 }
 
 const es: Dict = {
@@ -387,6 +528,40 @@ const es: Dict = {
   memOf: (used, total) => `${used} de ${total}`,
   reportOrphans: 'Huérfanos — el proceso padre terminó, pero sigue en ejecución',
   reportOutside: 'Fuera de sesiones:',
+
+  sectionQueue: 'Cola de ejecuciones',
+  queueNote: 'las ejecuciones pesadas de todas las sesiones van por turnos (runq)',
+  queueCommit: (free, limit) => `commit libre ${free} de ${limit}`,
+  queueRam: free => `RAM libre ${free}`,
+  queueDisk: (drive, free) => `${drive} ${free} libres`,
+  queueRun: (mem, now, peak, elapsed) => `declarado ${mem} · ahora ${now} · pico ${peak} · ${elapsed}`,
+  queueWait: (mem, waited) => `declarado ${mem} · espera ${waited}`,
+  queueWhyTag: (tag, by) => `${tag} está ocupado por ${by}`,
+  queueWhyMem: (need, guard, free) => `necesita ${need} + ${guard} de reserva, ${free} libres`,
+  queueWhyBehind: by => `detrás de ${by}, que espera memoria`,
+  queueWhyDisk: (need, drive, free) => `necesita ${need} en ${drive}, ${free} libres`,
+  queueOrphaned: 'su runq ya no existe',
+  queueRecent: 'Recientes',
+  queueEvent: ev => ({
+    queued: 'en cola', started: 'iniciado', finished: 'terminado', killed: 'detenido por su --max-mem', failed: 'no arrancó',
+    stale: 'retirado: su runq ya no existe', cancelled: 'cancelado', 'gave-up': 'dejó de esperar',
+  } as Record<string, string>)[ev] ?? ev,
+  queueExit: code => `salida ${code}`,
+  queueWaited: d => `esperó ${d}`,
+  queueRan: d => `corrió ${d}`,
+  queuePeak: mem => `pico ${mem}`,
+  queueEmpty: 'No hay ejecuciones pesadas ahora.',
+  dur: (h, m, s) => h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`,
+  queueAgo: d => `hace ${d}`,
+  queuePaneTitle: 'Cola de la máquina',
+  queueLogButton: 'registro ↗',
+  queueSummary: (running, waiting) => `en curso: ${running} · en espera: ${waiting}`,
+  feedHeader: 'Últimas 24 horas, lo más nuevo primero · los agentes añaden una línea con runq note "<texto>"',
+  feedEmpty: 'Nada en las últimas 24 horas.',
+  feedMore: n => `+ ${n} anteriores`,
+  feedQueued: mem => `en cola, declarado ${mem}`,
+  feedWaiting: (d, why) => d ? `espera ${d}: ${why}` : `espera: ${why}`,
+  feedStarted: d => d ? `iniciado tras ${d} en la cola` : 'iniciado',
 }
 
 const fr: Dict = {
@@ -462,6 +637,40 @@ const fr: Dict = {
   memOf: (used, total) => `${used} sur ${total}`,
   reportOrphans: 'Orphelins — parent disparu, processus toujours actif',
   reportOutside: 'Hors sessions :',
+
+  sectionQueue: 'File d’exécution',
+  queueNote: 'les exécutions lourdes de toutes les sessions passent à tour de rôle (runq)',
+  queueCommit: (free, limit) => `commit libre ${free} sur ${limit}`,
+  queueRam: free => `RAM libre ${free}`,
+  queueDisk: (drive, free) => `${drive} ${free} libres`,
+  queueRun: (mem, now, peak, elapsed) => `déclaré ${mem} · actuel ${now} · pic ${peak} · ${elapsed}`,
+  queueWait: (mem, waited) => `déclaré ${mem} · attend depuis ${waited}`,
+  queueWhyTag: (tag, by) => `${tag} est occupé par ${by}`,
+  queueWhyMem: (need, guard, free) => `besoin de ${need} + ${guard} de marge, ${free} libres`,
+  queueWhyBehind: by => `derrière ${by}, qui attend de la mémoire`,
+  queueWhyDisk: (need, drive, free) => `besoin de ${need} sur ${drive}, ${free} libres`,
+  queueOrphaned: 'son runq a disparu',
+  queueRecent: 'Récent',
+  queueEvent: ev => ({
+    queued: 'en file', started: 'démarré', finished: 'terminé', killed: 'arrêté par son --max-mem', failed: 'échec du démarrage',
+    stale: 'retiré : son runq a disparu', cancelled: 'annulé', 'gave-up': 'a renoncé à attendre',
+  } as Record<string, string>)[ev] ?? ev,
+  queueExit: code => `code ${code}`,
+  queueWaited: d => `a attendu ${d}`,
+  queueRan: d => `a duré ${d}`,
+  queuePeak: mem => `pic ${mem}`,
+  queueEmpty: 'Aucune exécution lourde en ce moment.',
+  dur: (h, m, s) => h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`,
+  queueAgo: d => `il y a ${d}`,
+  queuePaneTitle: 'File de la machine',
+  queueLogButton: 'journal ↗',
+  queueSummary: (running, waiting) => `${running} en cours · ${waiting} en attente`,
+  feedHeader: 'Dernières 24 heures, plus récent en premier · les agents ajoutent une ligne avec runq note "<texte>"',
+  feedEmpty: 'Rien au cours des dernières 24 heures.',
+  feedMore: n => `+ ${n} plus tôt`,
+  feedQueued: mem => `en file, déclaré ${mem}`,
+  feedWaiting: (d, why) => d ? `attend depuis ${d} : ${why}` : `attend : ${why}`,
+  feedStarted: d => d ? `démarré après ${d} dans la file` : 'démarré',
 }
 
 const pt: Dict = {
@@ -537,6 +746,40 @@ const pt: Dict = {
   memOf: (used, total) => `${used} de ${total}`,
   reportOrphans: 'Órfãos — processo pai encerrado, processo ainda em execução',
   reportOutside: 'Fora das sessões:',
+
+  sectionQueue: 'Fila de execuções',
+  queueNote: 'as execuções pesadas de todas as sessões vão em turnos (runq)',
+  queueCommit: (free, limit) => `commit livre ${free} de ${limit}`,
+  queueRam: free => `RAM livre ${free}`,
+  queueDisk: (drive, free) => `${drive} ${free} livres`,
+  queueRun: (mem, now, peak, elapsed) => `declarado ${mem} · agora ${now} · pico ${peak} · ${elapsed}`,
+  queueWait: (mem, waited) => `declarado ${mem} · aguardando ${waited}`,
+  queueWhyTag: (tag, by) => `${tag} está ocupado por ${by}`,
+  queueWhyMem: (need, guard, free) => `precisa de ${need} + ${guard} de reserva, ${free} livres`,
+  queueWhyBehind: by => `atrás de ${by}, que aguarda memória`,
+  queueWhyDisk: (need, drive, free) => `precisa de ${need} em ${drive}, ${free} livres`,
+  queueOrphaned: 'o runq dele não existe mais',
+  queueRecent: 'Recentes',
+  queueEvent: ev => ({
+    queued: 'na fila', started: 'iniciado', finished: 'concluído', killed: 'encerrado pelo seu --max-mem', failed: 'falha ao iniciar',
+    stale: 'removido: o runq dele não existe mais', cancelled: 'cancelado', 'gave-up': 'desistiu de esperar',
+  } as Record<string, string>)[ev] ?? ev,
+  queueExit: code => `saída ${code}`,
+  queueWaited: d => `aguardou ${d}`,
+  queueRan: d => `rodou ${d}`,
+  queuePeak: mem => `pico ${mem}`,
+  queueEmpty: 'Nenhuma execução pesada agora.',
+  dur: (h, m, s) => h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`,
+  queueAgo: d => `há ${d}`,
+  queuePaneTitle: 'Fila da máquina',
+  queueLogButton: 'registro ↗',
+  queueSummary: (running, waiting) => `${running} em execução · ${waiting} aguardando`,
+  feedHeader: 'Últimas 24 horas, mais recentes primeiro · os agentes adicionam uma linha com runq note "<texto>"',
+  feedEmpty: 'Nada nas últimas 24 horas.',
+  feedMore: n => `+ ${n} anteriores`,
+  feedQueued: mem => `na fila, declarado ${mem}`,
+  feedWaiting: (d, why) => d ? `aguardando ${d}: ${why}` : `aguardando: ${why}`,
+  feedStarted: d => d ? `iniciado após ${d} na fila` : 'iniciado',
 }
 
 const zh: Dict = {
@@ -612,6 +855,40 @@ const zh: Dict = {
   memOf: (used, total) => `${used} / ${total}`,
   reportOrphans: '孤儿进程 — 父进程已退出，进程仍在运行',
   reportOutside: '会话之外：',
+
+  sectionQueue: '运行队列',
+  queueNote: '所有会话的重负载运行轮流进行（runq）',
+  queueCommit: (free, limit) => `可用提交内存 ${free} / ${limit}`,
+  queueRam: free => `可用内存 ${free}`,
+  queueDisk: (drive, free) => `${drive} 可用 ${free}`,
+  queueRun: (mem, now, peak, elapsed) => `申报 ${mem} · 当前 ${now} · 峰值 ${peak} · ${elapsed}`,
+  queueWait: (mem, waited) => `申报 ${mem} · 已等待 ${waited}`,
+  queueWhyTag: (tag, by) => `${tag} 被 ${by} 占用`,
+  queueWhyMem: (need, guard, free) => `需要 ${need} + ${guard} 余量，可用 ${free}`,
+  queueWhyBehind: by => `排在 ${by} 之后，它在等内存`,
+  queueWhyDisk: (need, drive, free) => `在 ${drive} 上需要 ${need}，可用 ${free}`,
+  queueOrphaned: '它的 runq 已不存在',
+  queueRecent: '最近',
+  queueEvent: ev => ({
+    queued: '已排队', started: '已开始', finished: '已完成', killed: '被自身的 --max-mem 终止', failed: '启动失败',
+    stale: '已移除：其 runq 已不存在', cancelled: '已取消', 'gave-up': '放弃等待',
+  } as Record<string, string>)[ev] ?? ev,
+  queueExit: code => `退出码 ${code}`,
+  queueWaited: d => `等待了 ${d}`,
+  queueRan: d => `运行了 ${d}`,
+  queuePeak: mem => `峰值 ${mem}`,
+  queueEmpty: '目前没有重负载运行。',
+  dur: (h, m, s) => h ? `${h}小时${m}分钟` : m ? `${m}分钟` : `${s}秒`,
+  queueAgo: d => `${d}前`,
+  queuePaneTitle: '本机队列',
+  queueLogButton: '日志 ↗',
+  queueSummary: (running, waiting) => `运行中 ${running} · 等待中 ${waiting}`,
+  feedHeader: '最近 24 小时，最新在前 · 代理可用 runq note "<文本>" 添加一行',
+  feedEmpty: '最近 24 小时内没有记录。',
+  feedMore: n => `+ 另有 ${n} 条更早的`,
+  feedQueued: mem => `已排队，申报 ${mem}`,
+  feedWaiting: (d, why) => d ? `已等待 ${d}：${why}` : `等待中：${why}`,
+  feedStarted: d => d ? `排队 ${d} 后开始` : '已开始',
 }
 
 const ja: Dict = {
@@ -687,6 +964,40 @@ const ja: Dict = {
   memOf: (used, total) => `${used} / ${total}`,
   reportOrphans: '孤立プロセス — 親プロセスは終了、プロセスは実行中',
   reportOutside: 'セッション外：',
+
+  sectionQueue: '実行キュー',
+  queueNote: '全セッションの重い実行が順番に処理されます（runq）',
+  queueCommit: (free, limit) => `コミット空き ${free} / ${limit}`,
+  queueRam: free => `RAM 空き ${free}`,
+  queueDisk: (drive, free) => `${drive} 空き ${free}`,
+  queueRun: (mem, now, peak, elapsed) => `申告 ${mem} · 現在 ${now} · ピーク ${peak} · ${elapsed}`,
+  queueWait: (mem, waited) => `申告 ${mem} · ${waited} 待機中`,
+  queueWhyTag: (tag, by) => `${tag} は ${by} が使用中`,
+  queueWhyMem: (need, guard, free) => `${need} + 予備 ${guard} が必要、空き ${free}`,
+  queueWhyBehind: by => `メモリ待ちの ${by} の後ろ`,
+  queueWhyDisk: (need, drive, free) => `${drive} に ${need} が必要、空き ${free}`,
+  queueOrphaned: '対応する runq がありません',
+  queueRecent: '最近',
+  queueEvent: ev => ({
+    queued: '待機中', started: '開始', finished: '完了', killed: '自身の --max-mem で終了', failed: '起動に失敗',
+    stale: '削除：対応する runq がありません', cancelled: 'キャンセル', 'gave-up': '待機を断念',
+  } as Record<string, string>)[ev] ?? ev,
+  queueExit: code => `終了コード ${code}`,
+  queueWaited: d => `${d} 待機`,
+  queueRan: d => `${d} 実行`,
+  queuePeak: mem => `ピーク ${mem}`,
+  queueEmpty: '現在、重い実行はありません。',
+  dur: (h, m, s) => h ? `${h}時間${m}分` : m ? `${m}分` : `${s}秒`,
+  queueAgo: d => `${d}前`,
+  queuePaneTitle: 'マシンのキュー',
+  queueLogButton: 'ログ ↗',
+  queueSummary: (running, waiting) => `実行中 ${running} · 待機中 ${waiting}`,
+  feedHeader: '直近 24 時間、新しい順 · エージェントは runq note "<テキスト>" で1行追加します',
+  feedEmpty: '直近 24 時間は何もありません。',
+  feedMore: n => `+ それ以前 ${n} 件`,
+  feedQueued: mem => `待機中、申告 ${mem}`,
+  feedWaiting: (d, why) => d ? `${d} 待機中: ${why}` : `待機中: ${why}`,
+  feedStarted: d => d ? `キューで ${d} 待って開始` : '開始',
 }
 
 export const STRINGS: Record<Lang, Dict> = { en, ru, de, es, fr, pt, zh, ja }

@@ -59,7 +59,7 @@ export function psArgv(platform: 'darwin' | 'linux', withStart = true): string[]
 export const PS_ENV = { LC_ALL: '', LC_TIME: 'C', TZ: 'UTC' }
 
 /** The snapshot format these samplers write (Snapshot.v). */
-export const SNAP_V = 3
+export const SNAP_V = 4
 
 /** Output of psArgv's ps, with or without `lstart`. Malformed lines are skipped. */
 export function parsePs(text: string, withStart = true): PsRow[] {

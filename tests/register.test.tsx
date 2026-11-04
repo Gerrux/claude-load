@@ -20,7 +20,8 @@ const run = (args: string) => ({ command: 'load', args, origin: { kind: 'compose
 
 function snapshot(over: Partial<Snapshot> = {}): Snapshot {
   return {
-    v: 3, ts: NOW, intervalMs: 4000, cores: 16, cpu: 72, memTotalMB: 65457, memUsedMB: 42000, warm: true,
+    v: 4, ts: NOW, intervalMs: 4000, cores: 16, cpu: 72, memTotalMB: 65457, memUsedMB: 42000, warm: true,
+    commitUsedMB: 50000, commitLimitMB: 92000, disks: [{ name: 'C:', freeMB: 120000, totalMB: 950000 }, { name: 'D:', freeMB: 4096, totalMB: 1900000 }],
     sessions: [
       {
         pid: 1, name: 'Power line processing', status: 'busy', cwd: 'C:\\repo\\pipeline', hostSessionId: 'local_aaaa-1', sessionId: 'S1',
@@ -60,6 +61,16 @@ function world(on: On, files: Map<string, string>, runs: string[][], live: { tex
     return { value: text }
   })
   on('fs.write', ($, e) => { files.set(e.path, e.text); return { value: undefined } })
+  on('fs.list', ($, e) => {
+    const dir = String(e.path ?? '').replace(/[\\/]+$/, '')
+    const out = []
+    for (const [p, text] of files) {
+      const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))
+      if (p.slice(0, i) === dir) out.push({ name: p.slice(i + 1), kind: 'file', size: text.length, mtimeMs: NOW, isLink: false })
+    }
+    if (!out.length && ![...files.keys()].some(p => p.startsWith(dir + '\\'))) throw new Error('ENOENT')
+    return { value: out } as never
+  })
   on('process.run', async ($, e) => {
     runs.push([...e.argv])
     const held = live.hold?.([...e.argv])
@@ -75,6 +86,7 @@ function world(on: On, files: Map<string, string>, runs: string[][], live: { tex
 
 const SNAP = 'C:\\Users\\u\\.claude\\state\\load\\snapshot.json'
 const WANTED = 'C:\\Users\\u\\.claude\\state\\load\\wanted'
+const QDIR = 'C:\\Users\\u\\.claude\\state\\queue'
 
 describe('languages', () => {
   test('every language has every key', async () => {
@@ -513,6 +525,120 @@ describe('the mod', () => {
     expect(await pane.find({ type: 'Button', key: 'i0-open' } as never)).not.toBe(undefined)
     expect(await pane.find({ type: 'Text', text: '✻' })).not.toBe(undefined)
     expect(await pane.find({ type: 'Button', label: 'Sort it out with Claude' } as never)).not.toBe(undefined)
+  })
+
+  test('the guard denies a heavy command outside runq in a project under a root, with the line to run', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const files = new Map<string, string>([[SNAP, JSON.stringify(snapshot())], [`${QDIR}\\config.json`, JSON.stringify({ guard: { roots: ['C:/work'] } })]])
+    world(on, files, [])
+    const ran: string[] = []
+    on('tool.call', ($, e) => { ran.push(String((e as { command?: string }).command)); return { result: {} } as never })
+    await $.session.start(session)
+    const r = await $.tool.call({ tool: 'Bash', command: 'cd C:/work/x && cargo test --workspace 2>&1 | tail -5' }) as { deny?: string; text?: string }
+    const why = r.deny ?? r.text ?? ''
+    expect(why).toMatch(/Nothing was run/)
+    expect(why).toContain('cd C:/work/x && python "C:/Users/u/.claude/state/queue/runq.py" --mem 8 --tag cargo-test --label \'cargo test\' -- cargo test --workspace 2>&1 | tail -5')
+    expect(ran).toEqual([])
+    await $.tool.call({ tool: 'Bash', command: 'python "C:/Users/u/.claude/state/queue/runq.py" --mem 8 --tag cargo-test -- cargo test' })
+    await $.tool.call({ tool: 'PowerShell', command: 'cargo build --release' })
+    expect(ran.length).toBe(2)
+    const ps = await $.tool.call({ tool: 'PowerShell', command: '& "C:\\work\\t\\treegrow.exe" scan' }) as { deny?: string; text?: string }
+    expect(ps.deny ?? ps.text ?? '').toContain('runq.py" --mem 16 --tag treegrow --label \'treegrow run\' -- "C:\\work\\t\\treegrow.exe" scan')
+  })
+
+  test("the project's settings turn the guard on, or off under a root", async ($, on) => {
+    let env = '1'
+    world(on, new Map([[SNAP, JSON.stringify(snapshot())], [`${QDIR}\\config.json`, JSON.stringify({ guard: { roots: ['C:/work'] } })]]), [])
+    on('settings.read', () => ({ value: { env: { CLAUDE_LOAD_RUNQ_GUARD: env } } }) as never)
+    const ran: string[] = []
+    on('tool.call', ($, e) => { ran.push(String((e as { command?: string }).command)); return { result: {} } as never })
+    const clock = mock.clock(on, { now: NOW })
+    await $.session.start({ ...session, cwd: 'D:\\other' })
+    const r = await $.tool.call({ tool: 'Bash', command: 'cargo test' }) as { deny?: string; text?: string }
+    expect(r.deny ?? r.text ?? '').toMatch(/runq\.py" --mem 8 --tag cargo-test/)
+    env = '0'
+    await clock.advance(31000)
+    await $.session.start(session)
+    await $.tool.call({ tool: 'Bash', command: 'cargo test' })
+    expect(ran).toEqual(['cargo test'])
+  })
+
+  test('the guard stays off in a project that did not opt in', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    world(on, new Map([[SNAP, JSON.stringify(snapshot())], [`${QDIR}\\config.json`, JSON.stringify({ guard: { roots: ['D:/elsewhere'] } })]]), [])
+    const ran: string[] = []
+    on('tool.call', ($, e) => { ran.push(String((e as { command?: string }).command)); return { result: {} } as never })
+    await $.session.start(session)
+    await $.tool.call({ tool: 'Bash', command: 'cargo test' })
+    expect(ran).toEqual(['cargo test'])
+  })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`${surface}: the pane shows the run queue, why a job waits, and the last events`, async ($, on) => {
+      mock.clock(on, { now: NOW })
+      const job = (o: Record<string, unknown>) => JSON.stringify({ tags: [], curMB: 0, peakMB: 0, ...o })
+      const files = new Map<string, string>([
+        [SNAP, JSON.stringify(snapshot())],
+        [`${QDIR}\\jobs\\1-1.json`, job({ id: '1-1', label: 'HELIOS 1 ha', state: 'running', memMB: 20480, curMB: 18000, peakMB: 18800, queuedAt: NOW - 900000, startedAt: NOW - 600000, session: 'S1', tags: ['helios'] })],
+        [`${QDIR}\\jobs\\2-2.json`, job({ id: '2-2', label: 'cargo test ws', state: 'waiting', memMB: 8192, queuedAt: NOW - 120000, session: 'S2', reasons: [{ kind: 'mem', needMB: 8192, guardMB: 12288, freeMB: 9000 }] })],
+        [`${QDIR}\\events.jsonl`, [
+          JSON.stringify({ ts: NOW - 700000, ev: 'finished', label: 'grow pine', exit: 0, runS: 300, peakMB: 9000 }),
+          JSON.stringify({ ts: NOW - 60000, ev: 'killed', label: 'scan big', exit: 137, peakMB: 25000 }),
+        ].join('\n')],
+      ])
+      world(on, files, [])
+      await $.session.start({ ...session, surface })
+      await $.command.run(run(''))
+      const pane = await $.ui.mount({ plugin: 'claude-load', surface, component: 'Pane', requestId: 'claude-load', props: paneProps })
+      expect(await pane.find({ type: 'Text', text: 'RUN QUEUE' })).not.toBe(undefined)
+      expect(await pane.find({ type: 'Text', text: /free commit 41\.0 GB of 89\.8 GB · RAM free 22\.9 GB · C: 117\.2 GB free · D: 4\.0 GB free/ })).not.toBe(undefined)
+      expect(await pane.find({ type: 'Text', text: /declared 20\.0 GB · now 17\.6 GB · peak 18\.4 GB · 10 min · helios/ })).not.toBe(undefined)
+      expect(await pane.find({ type: 'Text', text: /Webapp slides/ })).not.toBe(undefined)
+      expect(await pane.find({ type: 'Text', text: /waiting 2 min · needs 8\.0 GB \+ 12\.0 GB guard, 8\.8 GB free/ })).not.toBe(undefined)
+      expect(await pane.find({ type: 'Text', text: /1 min ago {2}scan big · ended by its --max-mem · exit 137/ })).not.toBe(undefined)
+      const report = await $.command.run(run('')) as { text?: string }
+      expect(report.text).toMatch(/Run queue · free commit/)
+      expect(report.text).toMatch(/1\. cargo test ws \[Webapp slides\]/)
+    })
+  }
+
+  const FEED = [
+    { ts: NOW - 30 * 3600 * 1000, hm: '17:00', ev: 'finished', label: 'yesterday', exit: 0 },
+    { ts: NOW - 600000, hm: '20:50', ev: 'queued', label: 'cargo test', sessionName: 'treegrow-ф8', memMB: 8192, note: 'после правки крон' },
+    { ts: NOW - 590000, hm: '20:50', ev: 'waiting', label: 'cargo test', sessionName: 'treegrow-ф8', waitS: 0, reasons: [{ kind: 'tag', tag: 'cargo-test', by: 'phase7 tests' }] },
+    { ts: NOW - 240000, hm: '20:56', ev: 'waiting', label: 'cargo test', sessionName: 'treegrow-ф8', waitS: 360, reasons: [{ kind: 'mem', needMB: 8192, guardMB: 12288, freeMB: 9000 }] },
+    { ts: NOW - 60000, hm: '20:59', ev: 'note', sessionName: 'scan-lod', text: 'D: почти полон, чищу старые сканы' },
+  ].map(e => JSON.stringify(e)).join('\n')
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    kitTest(`${surface}: the feed pane reads as a log, newest first, a day back, in Russian`, { timeoutMs: 30000, options: { language: 'ru' } }, async ($, on) => {
+      mock.clock(on, { now: NOW })
+      world(on, new Map([[SNAP, JSON.stringify(snapshot())], [`${QDIR}\\events.jsonl`, FEED]]), [])
+      await $.session.start({ ...session, surface })
+      const r = await $.command.run(run('queue')) as { text?: string }
+      expect(r.text).toMatch(/^20:59 {2}scan-lod · «D: почти полон, чищу старые сканы»/m)
+      const pane = await $.ui.mount({ plugin: 'claude-load', surface, component: 'Pane', requestId: 'claude-load-queue', props: paneProps })
+      const lines = (await pane.findAll({ type: 'Text', text: /^\d\d:\d\d {2}/ } as never)).map((x: { text?: string }) => x.text ?? '')
+      expect(lines).toEqual([
+        '20:59  scan-lod · «D: почти полон, чищу старые сканы»',
+        '20:56  treegrow-ф8 · cargo test · ждёт 6 мин: нужно 8,0 ГБ + 12,0 ГБ запаса, свободно 8,8 ГБ',
+        '20:50  treegrow-ф8 · cargo test · ждёт: занят тег cargo-test (phase7 tests)',
+        '20:50  treegrow-ф8 · cargo test · в очереди, заявлено 8,0 ГБ · «после правки крон»',
+      ])
+    })
+  }
+
+  test('the feed pages a day back', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const many = Array.from({ length: 70 }, (_, i) => JSON.stringify({ ts: NOW - (70 - i) * 1000, ev: 'note', text: `n${i}` })).join('\n')
+    world(on, new Map([[SNAP, JSON.stringify(snapshot())], [`${QDIR}\\events.jsonl`, many]]), [])
+    await $.session.start(session)
+    await $.command.run(run('queue'))
+    const pane = await $.ui.mount({ plugin: 'claude-load', surface: 'terminal', component: 'Pane', requestId: 'claude-load-queue', props: paneProps })
+    expect(await pane.find({ type: 'Text', text: /«n69»/ })).not.toBe(undefined)
+    expect(await pane.find({ type: 'Text', text: /«n5»/ })).toBe(undefined)
+    await pane.press({ key: 'feed-more' })
+    expect(await pane.find({ type: 'Text', text: /«n0»/ })).not.toBe(undefined)
   })
 
   kitTest('Russian strings render in the pane when the option says so', { timeoutMs: 30000, options: { language: 'ru' } }, async ($, on) => {

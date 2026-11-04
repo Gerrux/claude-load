@@ -44,7 +44,8 @@ export type History = {
 
 export type Snapshot = {
   /**
-   * The format: absent (1.0.0), 2 with `Top.started`, 3 with `OutsideLoad.top` and the memory history.
+   * The format: absent (1.0.0), 2 with `Top.started`, 3 with `OutsideLoad.top` and the memory history,
+   * 4 with commit and disks (Windows).
    * A mod replaces a sampler that writes an older one.
    */
   v?: number
@@ -56,6 +57,11 @@ export type Snapshot = {
   cpu: number
   memTotalMB: number
   memUsedMB: number
+  /** Format 4, Windows: committed memory and the commit limit (RAM plus page file), for the run queue. */
+  commitUsedMB?: number | null
+  commitLimitMB?: number | null
+  /** Format 4, Windows: the fixed drives (`C:`) and their free space. */
+  disks?: Array<{ name: string; freeMB: number; totalMB: number }>
   /** False on a sampler's first pass, which has no CPU delta yet. */
   warm: boolean
   sessions: SessionLoad[]

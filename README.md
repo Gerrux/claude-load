@@ -78,6 +78,7 @@ and test runners, and the machine crawls while Task Manager shows a wall of `nod
 | 🧩 **Everything else** | other processes folded by name (`chrome ×31`), so you see whether the problem is Claude at all |
 | 🔎 **Filters & groups** | all · active · heavy · orphans · this window; by session, by repository (worktrees folded in), by process name; sort by CPU or memory |
 | ✻ **Sort it out with Claude** | one button: the bundled `sessions-triage` skill classifies idle sessions and orphans, asks once, archives or ends only what you approve |
+| ⏳ **Run queue** | `runq` makes heavy runs of all sessions take turns on the machine by memory, exclusive tags and disk; an opt-in guard sends them there |
 | 🚦 **Load line** | above the prompt under high load (CPU ≥ 50% or memory ≥ 85%), with the top consumers |
 | 🌍 **8 languages** | English, Русский, Deutsch, Español, Français, Português, 中文, 日本語 |
 
@@ -108,6 +109,112 @@ Filter, grouping and sorting are remembered across sessions.
 **Language:** the plugin's `language` option (`/config`) takes `auto`, `en`, `ru`, `de`,
 `es`, `fr`, `pt`, `zh` or `ja`. `auto` follows Claude Code's `language` setting, then the
 system locale, then English.
+
+## Run queue (runq)
+
+Several sessions on one machine each start a memory-hungry run (a test suite, a simulation,
+a big build), and the machine runs out of memory, or two runs that share temporary paths
+break each other. `runq` makes them take turns by themselves: each heavy command waits in
+one queue for the whole machine until there is room for it, then runs as usual.
+
+```bash
+python "$HOME/.claude/state/queue/runq.py" --mem 20 --tag helios --label "scan 1 ha" -- ./target/release/treegrow-cli scan --plot 1ha
+```
+
+The same line works in Git Bash and in PowerShell (`$HOME` expands in both; elsewhere use
+`python3`). It needs Python 3.8 or later. The mod copies `runq.py` to
+`~/.claude/state/queue/` at every session start, so the path stays the same across plugin
+updates.
+
+A job waits, first come first served, until all of these hold:
+
+- **memory:** free commit (what Windows can still promise: RAM plus the page file) covers
+  the job's `--mem` plus a guard, 12 GB by default. Running jobs count with what they
+  declared and have not taken yet, so two jobs admitted a second apart do not both see the
+  same free memory. A smaller job may pass a bigger one that waits for memory; once the
+  bigger one has waited 5 minutes nothing that needs memory passes it.
+- **exclusive tags:** no running job, and no job queued earlier, holds the same exclusive
+  tag. `cargo-test` is exclusive by default: one `cargo test` per machine.
+- **disk:** each `--disk D:=<GB>` drive has that much free space, minus what running jobs
+  declared for it and have not written yet.
+
+Then runq runs the command as its own child with the terminal's stdin, stdout and stderr,
+and exits with the command's exit code. runq's own lines go to stderr and start with
+`runq:`: a progress line every 30 s while waiting (why it waits), and the exit, run time and
+peak memory at the end.
+
+| Option | |
+| --- | --- |
+| `--mem <GB>` | the run's expected peak memory (required; `0` for a run that only needs a tag) |
+| `--tag <name>` | repeatable; exclusive if listed in `exclusiveTags` |
+| `--disk D:=<GB>` | repeatable; free space a drive must have (a path on macOS/Linux) |
+| `--label <text>` | what the pane and the log call the job (default: the command) |
+| `--max-mem <GB>` | end the command's own process tree if it goes over this |
+| `--max-wait <min>` | give up after waiting this long (exit 75) |
+| `--note <text>` | a line for the feed, shown with the job's `queued` event |
+
+| Exit | |
+| --- | --- |
+| the command's | it ran |
+| 2 | usage error |
+| 3 | `--mem` plus the guard is more than the machine's commit limit: it could never start |
+| 75 | `--max-wait` ran out |
+| 126 | the command could not be started (for example a freshly built `.exe` that Microsoft Defender blocks: `Permission denied`); reported once, never retried |
+| 127 | command not found |
+| 130 | cancelled (Ctrl+C) while waiting |
+| 137 | ended by its own `--max-mem` |
+
+`runq.py status` shows what runs and what waits (and why), free commit, RAM and disks;
+`runq.py log --since 30m` (or `-n 50`, an ISO time, `--json`) shows the events: queued,
+waiting (and why, again whenever the reason changes), started, finished, killed, failed,
+stale, cancelled, gave-up, note. `runq.py note "<text>"` adds a line of the agent's own
+("D: is nearly full, clearing old scans"), so the feed also reads as a conversation about
+the machine; it is a log, nobody is notified. The pane shows the queue in a **Run queue**
+section while anything runs or waits, and for two hours after; **feed ↗** there (or
+`/load queue`) opens the feed as a pane of its own: the last 24 hours, newest first, one
+line per event: time, session, job, what happened and why.
+
+**What runq touches.** It reads other processes' memory only through the machine's totals.
+The only processes it ever ends are its own command's tree, and only with `--max-mem`. On
+Windows the command runs in a Job Object: its tree is exactly the job's members, each
+checked to be in the job before it is ended, and a runq that is itself killed takes its
+command along instead of leaving it running unaccounted. Where no job can be made (and on
+macOS/Linux) the tree is walked by parent PID, and each process's start time is checked
+before it is ended. A job whose runq and command are both gone (a crash, a reboot) is
+dropped by PID and start time; a command still running after its runq died keeps its slot
+and its tags. The decisions are taken under an OS file lock, which the OS releases when its
+holder dies.
+
+**Settings:** `~/.claude/state/queue/config.json`, all optional:
+
+```json
+{
+  "guardGB": 12,
+  "exclusiveTags": ["cargo-test"],
+  "fairAfterMin": 5,
+  "guard": {
+    "roots": ["C:/Users/me/garage/treegrow", "D:/work/treegrow-*"],
+    "rules": [{ "name": "cargo test", "pattern": "^cargo(\\s+\\+\\S+)?\\s+(test|nextest)\\b", "tag": "cargo-test", "memGB": 8 }]
+  }
+}
+```
+
+### The guard: heavy commands only through runq
+
+In a project that opts in, a Bash or PowerShell command that starts a heavy run outside
+runq is denied, and the agent gets the exact runq line to run instead (its `cd …&&` and
+`| tail` kept). The mod never rewrites or runs a command itself. Turn it on for a project
+in its `.claude/settings.json` (shared, so every worktree of it has it) or
+`.claude/settings.local.json`:
+
+```json
+{ "env": { "CLAUDE_LOAD_RUNQ_GUARD": "1" } }
+```
+
+or for folders, worktrees included, with `guard.roots` in `config.json` (`*` stands for
+one path part); `"0"` in a project's settings turns it off there. Heavy by default:
+`cargo test` / `cargo nextest`, `treegrow*` `grow|scan|stand|forest` (an executable or
+`cargo run … -- <verb>`), and `helios*`; `guard.rules` replaces the list.
 
 ## How it works
 
@@ -153,6 +260,7 @@ output but has not yet run on a real Mac or Linux box. Reports and fixes are wel
 ```bash
 claude plugin validate .
 claude plugin test .
+python -m unittest discover -s runq -v
 claude --plugin-dir .
 ```
 

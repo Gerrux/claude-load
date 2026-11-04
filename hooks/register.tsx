@@ -4,6 +4,8 @@ import { STRINGS, fmtMem as fmtMemIn, lead, pickLang, plural } from './i18n'
 import type { Lang } from './i18n'
 import { PS_ENV, SNAP_V, buildSnapshot, freshMemory, orphanCandidates, parseLsofCwd, parseMeminfo, parsePs, parseSessionFile, parseVmStat, psArgv } from './posix'
 import type { SamplerMemory, SessionMeta } from './posix'
+import { DEFAULT_RULES, denyText, findHeavy, guardOn, guardRules, parseEvents, parseJob, sortJobs } from './queue'
+import type { GuardConfig, GuardRule, QueueEvent, QueueJob, QueueMachine, QueueReason } from './queue'
 import type { ByName, OrphanLoad, OutsideLoad, Snapshot, Top } from './types'
 
 export type { Snapshot } from './types'
@@ -367,6 +369,14 @@ type State = {
   cwdCache: Map<number, string>
   /** A macOS/Linux pass is running. */
   sampling: boolean
+  /** The run queue (runq/runq.py): its folder and what runq last wrote there. */
+  queueDir: string
+  queue: { jobs: QueueJob[]; events: QueueEvent[]; machine: QueueMachine | null; eventsSize: number }
+  /** The session's folder: the guard is on by project. */
+  cwd: string
+  guard: { on: boolean; rules: GuardRule[]; checkedAt: number }
+  /** How many feed lines the feed pane shows; "earlier" adds a page. */
+  feedShown: number
 }
 
 export function freshState(): State {
@@ -374,6 +384,7 @@ export function freshState(): State {
     snap: null, selfId: null, band: 'auto', filter: 'all', group: 'sessions', sort: 'cpu', showAll: false,
     expanded: new Set(), confirm: null, platform: 'other', home: '', sep: '/', stateDir: '', script: '',
     lastWanted: 0, lastSpawn: 0, spawns: 0, replaces: 0, timer: null, posix: freshMemory(), cores: 0, memBytes: 0, cwdCache: new Map(), sampling: false,
+    queueDir: '', queue: { jobs: [], events: [], machine: null, eventsSize: -1 }, cwd: '', guard: { on: false, rules: DEFAULT_RULES, checkedAt: 0 }, feedShown: 60,
   }
 }
 
@@ -545,8 +556,13 @@ async function tick($: EngineInterface, st: State) {
   // A sampler of an older version keeps running while sessions want it, and its snapshots carry no
   // start times, so nothing could be ended: start this version's over it.
   else if (st.platform === 'win32' && fresh && (fresh.v ?? 1) < SNAP_V && now - st.lastSpawn > RESPAWN_MS && st.replaces < 3) await spawnSampler($, st, true)
+  const queueBefore = JSON.stringify([st.queue.jobs, st.queue.eventsSize])
+  await readQueue($, st)
+  const queueChanged = JSON.stringify([st.queue.jobs, st.queue.eventsSize]) !== queueBefore
   if (fresh && fresh.ts !== st.snap?.ts && fresh.warm) {
     st.snap = fresh
+    $.ui.invalidate('ui.render')
+  } else if (queueChanged) {
     $.ui.invalidate('ui.render')
   }
 }
@@ -743,6 +759,239 @@ async function saveView($: EngineInterface, st: State) {
   $.ui.invalidate('ui.render')
 }
 
+// --- the run queue -----------------------------------------------------
+
+/** How long the queue section shows the last events once nothing runs or waits. */
+const QUEUE_RECENT_MS = 2 * 3600 * 1000
+/** The feed pane: a day of events, newest first, a page at a time. */
+const QUEUE_PANE = 'claude-load-queue'
+const FEED_MS = 24 * 3600 * 1000
+const FEED_MAX = 3000
+const FEED_PAGE = 60
+const GUARD_RECHECK_MS = 30000
+
+/** What runq wrote: the jobs, the last events (re-read when the log grows) and its last reading. */
+async function readQueue($: EngineInterface, st: State) {
+  if (!st.queueDir) return
+  const at = (name: string) => `${st.queueDir}${st.sep}${name}`
+  let entries: Array<{ name: string; size: number }>
+  try {
+    entries = await $.fs.list(st.queueDir)
+  } catch {
+    st.queue = { jobs: [], events: [], machine: null, eventsSize: -1 }
+    return
+  }
+  const log = entries.find(f => f.name === 'events.jsonl')
+  if (log && log.size !== st.queue.eventsSize) {
+    try {
+      st.queue.events = parseEvents(String(await $.fs.read(at('events.jsonl'))), FEED_MAX)
+      st.queue.eventsSize = log.size
+    } catch {
+      // Being trimmed: next tick.
+    }
+  }
+  try { st.queue.machine = JSON.parse(String(await $.fs.read(at('machine.json')))) as QueueMachine } catch { st.queue.machine = null }
+  const jobs: QueueJob[] = []
+  try {
+    for (const f of await $.fs.list(at('jobs'))) {
+      if (!f.name.endsWith('.json')) continue
+      let j: QueueJob | null = null
+      try {
+        j = parseJob(String(await $.fs.read(`${at('jobs')}${st.sep}${f.name}`)))
+      } catch {
+        // Being replaced by its runq: the last reading stands, so the row does not flicker.
+        j = st.queue.jobs.find(x => `${x.id}.json` === f.name) ?? null
+      }
+      if (j) jobs.push(j)
+    }
+  } catch {
+    // No jobs folder yet.
+  }
+  st.queue.jobs = jobs
+}
+
+/** `__version__ = <n>` in runq.py: the copy a newer mod wrote is not replaced by an older one. */
+function runqVersion(text: string): number {
+  const m = /^__version__ = (\d+)/m.exec(text)
+  return m ? Number(m[1]) : 0
+}
+
+/**
+ * runq.py at a path that survives plugin updates: <home>/.claude/state/queue/runq.py, copied from
+ * the plugin when missing or older. Agents run it as `python <that path> …` from any shell.
+ */
+async function installRunq($: EngineInterface, st: State) {
+  try {
+    const text = String(await $.fs.read(`${$.plugin.root}${st.sep}runq${st.sep}runq.py`))
+    let old = ''
+    try { old = String(await $.fs.read(`${st.queueDir}${st.sep}runq.py`)) } catch { /* not there yet */ }
+    if (old !== text && runqVersion(text) >= runqVersion(old)) await $.fs.write(`${st.queueDir}${st.sep}runq.py`, text)
+  } catch (err) {
+    $.ui.log(`claude-load: could not install runq: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/** The command line that runs runq, the same from Bash and PowerShell. */
+export function runqCommand(queueDir: string, platform: Platform): string {
+  return `${platform === 'win32' ? 'python' : 'python3'} "${queueDir.replace(/\\/g, '/')}/runq.py"`
+}
+
+/** The project's opt-in (settings `env.CLAUDE_LOAD_RUNQ_GUARD`) and config.json's `guard` block. */
+async function refreshGuard($: EngineInterface, st: State, now: number) {
+  st.guard.checkedAt = now
+  let setting: unknown
+  try {
+    const env = ((await $.settings.read()) as Record<string, unknown>).env as Record<string, unknown> | undefined
+    setting = env?.CLAUDE_LOAD_RUNQ_GUARD
+  } catch {
+    // No settings: config.json decides.
+  }
+  let guard: GuardConfig | undefined
+  try {
+    guard = (JSON.parse(String(await $.fs.read(`${st.queueDir}${st.sep}config.json`))) as { guard?: GuardConfig }).guard
+  } catch {
+    guard = undefined
+  }
+  st.guard.on = guardOn(setting, st.cwd, guard)
+  st.guard.rules = guardRules(guard)
+}
+
+/** A heavy command outside runq, in a project that opted in: the deny text, else null. */
+async function guardCheck($: EngineInterface, st: State, command: string, ps: boolean): Promise<string | null> {
+  if (!st.queueDir) return null
+  const now = await $.clock.now()
+  if (now - st.guard.checkedAt >= GUARD_RECHECK_MS) await refreshGuard($, st, now)
+  if (!st.guard.on) return null
+  const hit = findHeavy(command, st.guard.rules, ps)
+  return hit ? denyText(command, hit, runqCommand(st.queueDir, st.platform), ps) : null
+}
+
+export function durText(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  return tr().dur(Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60)
+}
+
+export function reasonText(r: QueueReason): string {
+  const t = tr()
+  switch (r.kind) {
+    case 'tag': return t.queueWhyTag(r.tag, r.by)
+    case 'mem': return t.queueWhyMem(fmtMem(r.needMB), fmtMem(r.guardMB), fmtMem(r.freeMB))
+    case 'behind': return t.queueWhyBehind(r.by)
+    case 'disk': return t.queueWhyDisk(fmtMem(r.needMB), r.drive, fmtMem(r.freeMB))
+    default: return ''
+  }
+}
+
+/** A job's session: its name from runq, else the snapshot's, else a short id. */
+function jobSession(j: QueueJob, snap: Snapshot | null): string {
+  if (j.sessionName) return j.sessionName
+  const s = snap?.sessions.find(x => x.sessionId === j.session || (!!j.hostSession && x.hostSessionId === j.hostSession))
+  return s?.name || (j.session ?? '').slice(0, 8)
+}
+
+export type QueueFigures = { commitFreeMB?: number; commitLimitMB?: number; ramFreeMB?: number; disks: Array<{ name: string; freeMB: number }> }
+
+/** Free commit, RAM and disks: the snapshot's (sampler format 4), else runq's last reading if fresh. */
+export function queueFigures(snap: Snapshot | null, machine: QueueMachine | null, now: number): QueueFigures {
+  const fresh = machine && now - machine.ts < 60000 ? machine : null
+  const out: QueueFigures = { disks: [] }
+  if (snap && snap.commitLimitMB && snap.commitUsedMB != null) {
+    out.commitFreeMB = snap.commitLimitMB - snap.commitUsedMB
+    out.commitLimitMB = snap.commitLimitMB
+  } else if (fresh) {
+    out.commitFreeMB = fresh.commitFreeMB
+    out.commitLimitMB = fresh.commitLimitMB
+  }
+  if (snap) out.ramFreeMB = snap.memTotalMB - snap.memUsedMB
+  else if (fresh?.ramFreeMB != null) out.ramFreeMB = fresh.ramFreeMB
+  if (snap?.disks?.length) out.disks = snap.disks.map(d => ({ name: d.name, freeMB: d.freeMB }))
+  else if (fresh?.disks) out.disks = Object.entries(fresh.disks).map(([name, freeMB]) => ({ name, freeMB }))
+  return out
+}
+
+export function figuresText(f: QueueFigures): string {
+  const t = tr()
+  return [
+    f.commitFreeMB != null && f.commitLimitMB != null ? t.queueCommit(fmtMem(f.commitFreeMB), fmtMem(f.commitLimitMB)) : '',
+    f.ramFreeMB != null ? t.queueRam(fmtMem(f.ramFreeMB)) : '',
+    ...f.disks.map(d => t.queueDisk(d.name, fmtMem(d.freeMB))),
+  ].filter(Boolean).join(' · ')
+}
+
+/** What happened, in words: "waiting 6 min: cargo-test is held by …". */
+export function eventPhrase(e: QueueEvent): string {
+  const t = tr()
+  const d = (s?: number) => (s != null && s >= 1 ? durText(s * 1000) : '')
+  const extra: string[] = []
+  let head: string
+  switch (e.ev) {
+    case 'queued': head = t.feedQueued(fmtMem(e.memMB ?? 0)); break
+    case 'waiting': head = t.feedWaiting(d(e.waitS), (e.reasons ?? []).map(reasonText).join('; ')); break
+    case 'started': head = t.feedStarted(d(e.waitS)); break
+    case 'note': head = ''; break
+    case 'gave-up': head = t.queueEvent(e.ev); if (e.waitS != null) extra.push(t.queueWaited(durText(e.waitS * 1000))); break
+    default: head = t.queueEvent(e.ev)
+  }
+  if (e.exit != null) extra.push(t.queueExit(e.exit))
+  if (e.runS != null) extra.push(t.queueRan(durText(e.runS * 1000)))
+  if (e.peakMB != null) extra.push(t.queuePeak(fmtMem(e.peakMB)))
+  if (e.error) extra.push(e.error.slice(0, 160))
+  const said = e.text ?? e.note
+  return [head, ...extra, said ? `«${said}»` : ''].filter(Boolean).join(' · ')
+}
+
+/** Who: the session's name as runq or the snapshot knows it. */
+function eventWho(e: QueueEvent, snap: Snapshot | null): string {
+  return jobSession({ id: e.id ?? '', label: '', state: 'running', queuedAt: 0, session: e.session, hostSession: e.hostSession, sessionName: e.sessionName }, snap)
+}
+
+/** One line of the feed: "21:03  treegrow-f8 · cargo test · waiting 6 min: …". */
+export function eventText(e: QueueEvent, now: number, snap: Snapshot | null = null): string {
+  const when = e.hm ?? tr().queueAgo(durText(now - e.ts))
+  return `${when}  ${[eventWho(e, snap), e.label ?? '', eventPhrase(e)].filter(Boolean).join(' · ')}`
+}
+
+/** How a feed line is drawn: trouble in warning, agents' own lines in Claude's color, the rest dim. */
+function feedTone(e: QueueEvent): { color?: 'warning' | 'claude'; dimColor?: boolean } {
+  if (e.ev === 'killed' || e.ev === 'failed' || e.ev === 'stale') return { color: 'warning' }
+  if (e.ev === 'note') return { color: 'claude' }
+  return { dimColor: e.ev !== 'waiting' && e.ev !== 'started' }
+}
+
+async function openFeed($: EngineInterface, st: State) {
+  st.feedShown = FEED_PAGE
+  await $.ui.open({ id: QUEUE_PANE, title: tr().queuePaneTitle })
+  $.ui.invalidate('ui.render')
+}
+
+/** The feed: the last day, newest first. */
+export function feedEvents(events: QueueEvent[], now: number): QueueEvent[] {
+  return events.filter(e => now - e.ts < FEED_MS).reverse()
+}
+
+/** Whether the pane shows the queue: something runs or waits, or happened in the last two hours. */
+export function queueVisible(q: State['queue'], now: number): boolean {
+  return q.jobs.length > 0 || q.events.some(e => now - e.ts < QUEUE_RECENT_MS)
+}
+
+/** The queue in the /load report. */
+export function queueReport(q: State['queue'], snap: Snapshot | null, now: number): string[] {
+  if (!queueVisible(q, now)) return []
+  const t = tr()
+  const { running, waiting } = sortJobs(q.jobs)
+  const lines = ['', `${t.sectionQueue} · ${figuresText(queueFigures(snap, q.machine, now))}`]
+  for (const j of running) {
+    lines.push(`▶ ${short(j.label, 40)} [${jobSession(j, snap)}] ${t.queueRun(fmtMem(j.memMB ?? 0), fmtMem(j.curMB ?? 0), fmtMem(j.peakMB ?? 0), durText(now - (j.startedAt ?? now)))}`)
+  }
+  waiting.forEach((j, i) => {
+    lines.push(`${i + 1}. ${short(j.label, 40)} [${jobSession(j, snap)}] ${t.queueWait(fmtMem(j.memMB ?? 0), durText(now - j.queuedAt))}` +
+      `${j.reasons?.length ? ' · ' + j.reasons.map(reasonText).join('; ') : ''}`)
+  })
+  if (!running.length && !waiting.length) lines.push(t.queueEmpty)
+  for (const e of q.events.slice(-3).reverse()) lines.push(`  ${eventText(e, now, snap)}`)
+  return lines
+}
+
 const FILTERS: Filter[] = ['all', 'active', 'heavy', 'orphans', 'self']
 const GROUPS: Group[] = ['sessions', 'repos', 'procs']
 const SORTS: Sort[] = ['cpu', 'mem']
@@ -772,6 +1021,10 @@ export const register: Register = (on, options) => {
     st.stateDir = [st.home, '.claude', 'state', 'load'].join(st.sep)
     st.script = `${$.plugin.root}\\sampler\\load-sampler.ps1`.replace(/\//g, '\\')
     st.selfId = await $.session.id()
+    st.queueDir = [st.home, '.claude', 'state', 'queue'].join(st.sep)
+    st.cwd = e.cwd ?? ''
+    st.guard.checkedAt = 0
+    await installRunq($, st)
     const saved = await $.store.get(KEY_BAND)
     st.band = saved === 'on' || saved === 'off' ? saved : 'auto'
     const view = (await $.store.get(KEY_VIEW)) as { filter?: Filter; group?: Group; sort?: Sort } | undefined
@@ -781,7 +1034,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'load',
       description: tr().commandDescription,
-      argumentHint: '[all | band on|off|auto]',
+      argumentHint: '[all | queue | band on|off|auto]',
       immediate: true,
     })
     st.timer?.cancel()
@@ -796,6 +1049,17 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // The machine queue's guard: in a project that opted in, a heavy command outside runq is denied
+  // with the runq line to run instead. Nothing is rewritten or run here; a failing guard lets it pass.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const deny = await guardCheck($, st, String(e.command ?? ''), false)
+    return deny ? { deny } : next(e)
+  }).catch(($, e, next) => next(e))
+  on('tool.call', { tool: 'PowerShell' }, async ($, e, next) => {
+    const deny = await guardCheck($, st, String(e.command ?? ''), true)
+    return deny ? { deny } : next(e)
+  }).catch(($, e, next) => next(e))
+
   on('command.run', { command: 'load' }, async ($, e) => {
     const t = tr()
     if (st.platform === 'other') return { text: t.unsupported }
@@ -808,12 +1072,59 @@ export const register: Register = (on, options) => {
       $.ui.invalidate('ui.render')
       return { text: t.bandSet(mode) }
     }
+    if (words[0] === 'queue') {
+      await tick($, st)
+      await openFeed($, st)
+      const now = await $.clock.now()
+      const feed = feedEvents(st.queue.events, now)
+      return { text: [...queueReport(st.queue, st.snap, now).slice(1), ...feed.slice(0, 20).map(ev => eventText(ev, now, st.snap))].join('\n') || t.feedEmpty }
+    }
     st.showAll = words[0] === 'all'
     await tick($, st)
     await $.ui.open({ id: PANE, title: t.paneTitle })
     $.ui.invalidate('ui.render')
     if (!st.snap) return { text: isBlocked(st) ? t.samplerBlocked : t.samplerStarting }
-    return { text: textReport(buildView(st.snap, st.selfId, await $.clock.now(), st.sort)) }
+    const now = await $.clock.now()
+    return { text: [textReport(buildView(st.snap, st.selfId, now, st.sort)), ...queueReport(st.queue, st.snap, now)].join('\n') }
+  })
+
+  // The feed: the queue's last day as a log people and agents read, newest first.
+  on('ui.render', { component: 'Pane', requestId: QUEUE_PANE }, async ($, e) => {
+    const t = tr()
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const now = await $.clock.now()
+    const q = st.queue
+    const { running, waiting } = sortJobs(q.jobs)
+    const feed = feedEvents(q.events, now)
+    const shown = feed.slice(0, st.feedShown)
+    const width = (e.props.bodyColumns ?? 0) > PANE_MAX ? PANE_MAX : undefined
+    return (
+      <Box flexDirection="column" width={width}>
+        <Box borderStyle="round" borderColor="subtle" paddingX={1} flexDirection="column">
+          <Text bold>{t.queueSummary(running.length, waiting.length)}</Text>
+          <Text dimColor wrap="truncate-end">{figuresText(queueFigures(st.snap, q.machine, now))}</Text>
+          {[...running, ...waiting].map((j, i) => (
+            <Text key={`fj${i}`} color={j.state === 'waiting' ? 'warning' : undefined} wrap="truncate-end">
+              {j.state === 'running' ? '▶' : '⏸'} {[jobSession(j, st.snap), j.label,
+                j.state === 'running'
+                  ? t.queueRun(fmtMem(j.memMB ?? 0), fmtMem(j.curMB ?? 0), fmtMem(j.peakMB ?? 0), durText(now - (j.startedAt ?? now)))
+                  : t.feedWaiting(durText(now - j.queuedAt), (j.reasons ?? []).map(reasonText).join('; '))].filter(Boolean).join(' · ')}
+            </Text>
+          ))}
+        </Box>
+        <Box marginTop={1}><Text dimColor>{t.feedHeader}</Text></Box>
+        {!feed.length && <Box marginTop={1}><Text dimColor>{t.feedEmpty}</Text></Box>}
+        {shown.map((ev, i) => (
+          <Text key={`f${i}`} {...feedTone(ev)} wrap="wrap">{eventText(ev, now, st.snap)}</Text>
+        ))}
+        {feed.length > shown.length && (
+          <Box marginTop={1}>
+            <Button key="feed-more" label={t.feedMore(feed.length - shown.length)} plain dimColor
+              onPress={() => { st.feedShown += FEED_PAGE; $.ui.invalidate('ui.render') }} />
+          </Box>
+        )}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -1107,6 +1418,61 @@ export const register: Register = (on, options) => {
       }),
     ]
 
+    // --- the run queue (runq): what runs, what waits and why, the last events ---
+    const now = await $.clock.now()
+    const q = st.queue
+    const qJobs = sortJobs(q.jobs)
+    const queueBlock = queueVisible(q, now) && (
+      <Box key="queue" flexDirection="column">
+        {section(t.sectionQueue, t.queueNote)}
+        <Box paddingLeft={Svg ? 3 : 2}><Text dimColor wrap="truncate-end">{figuresText(queueFigures(snap, q.machine, now))}</Text></Box>
+        {qJobs.running.map((j, i) => (
+          <Box key={`qr${i}`} flexDirection="column" marginTop={1}>
+            <Box alignItems="center" gap={1}>
+              {icon('busy')}
+              {nameCell(j.label, { bold: true })}
+              <Text dimColor>{short(jobSession(j, snap), 28)}</Text>
+              {memCell(j.curMB ?? 0, false)}
+            </Box>
+            <Box paddingLeft={Svg ? 3 : 2}>
+              <Text dimColor wrap="truncate-end">
+                {[t.queueRun(fmtMem(j.memMB ?? 0), fmtMem(j.curMB ?? 0), fmtMem(j.peakMB ?? 0), durText(now - (j.startedAt ?? now))),
+                  j.tags?.length ? j.tags.join(',') : '', j.orphaned ? t.queueOrphaned : ''].filter(Boolean).join(' · ')}
+              </Text>
+            </Box>
+          </Box>
+        ))}
+        {qJobs.waiting.map((j, i) => (
+          <Box key={`qw${i}`} flexDirection="column" marginTop={1}>
+            <Box alignItems="center" gap={1}>
+              {icon('idle')}
+              {nameCell(`${i + 1}. ${j.label}`)}
+              <Text dimColor>{short(jobSession(j, snap), 28)}</Text>
+              {memCell(j.memMB ?? 0, true)}
+            </Box>
+            <Box paddingLeft={Svg ? 3 : 2}>
+              <Text color="warning" wrap="truncate-end">
+                {[t.queueWait(fmtMem(j.memMB ?? 0), durText(now - j.queuedAt)), ...(j.reasons ?? []).map(reasonText)].join(' · ')}
+              </Text>
+            </Box>
+          </Box>
+        ))}
+        {!q.jobs.length && <Box paddingLeft={Svg ? 3 : 2}><Text dimColor>{t.queueEmpty}</Text></Box>}
+        {q.events.length > 0 && (
+          <Box flexDirection="column" paddingLeft={Svg ? 3 : 2} marginTop={1}>
+            <Box gap={1} alignItems="center">
+              <Text dimColor bold>{t.queueRecent}</Text>
+              <Box flexGrow={1} />
+              <Button key="queue-feed" label={t.queueLogButton} plain dimColor onPress={() => { void openFeed($, st) }} />
+            </Box>
+            {q.events.slice(-5).reverse().map((ev, i) => (
+              <Text key={`qe${i}`} {...feedTone(ev)} wrap="truncate-end">{eventText(ev, now, snap)}</Text>
+            ))}
+          </Box>
+        )}
+      </Box>
+    )
+
     const empty = st.group === 'sessions' && !shown.sessions.length && !shown.idle.length && !shown.orphans.length
 
     return (
@@ -1114,6 +1480,7 @@ export const register: Register = (on, options) => {
         {head}
         {controls}
         {confirmBar}
+        {queueBlock}
         {body}
         {empty && <Box marginTop={1}><Text dimColor>{t.empty}</Text></Box>}
         {outsideBlock}
